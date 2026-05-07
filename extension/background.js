@@ -47,6 +47,26 @@ function connectHost() {
   reconnectDelayMs = 500;
 
   send({ type: "hello", version: "0.1.0" });
+
+  // Tell every tab to forget its dedupe state and re-broadcast its current
+  // media-session state. Required after reconnect because the new host
+  // process has empty state, but inject.js doesn't realise it (the page's
+  // track hasn't changed, so its trackKey-based dedupe will skip).
+  resyncAllTabs();
+}
+
+function resyncAllTabs() {
+  // Best-effort fanout — tabs without our content script (chrome:// pages,
+  // about:* etc.) just reject the message and we ignore.
+  browser.tabs
+    .query({})
+    .then((tabs) => {
+      for (const tab of tabs) {
+        if (typeof tab.id !== "number") continue;
+        browser.tabs.sendMessage(tab.id, { kind: "mpris-resync" }).catch(() => {});
+      }
+    })
+    .catch(() => {});
 }
 
 function scheduleReconnect() {

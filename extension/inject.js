@@ -249,6 +249,16 @@
     const media = pickActiveMedia();
     if (media && !media.paused) scheduleNotify();
   }, 1000);
+  // Belt-and-braces heartbeat: every 10 seconds, drop the dedupe key and
+  // force a re-send. This guarantees recovery from any silent host respawn
+  // (idle reaping, extension reload, host crash) within 10s, even if the
+  // background's resync message didn't reach us.
+  setInterval(() => {
+    if (reported) {
+      lastTrackKey = "";
+      scheduleNotify();
+    }
+  }, 10000);
 
   // Inbound commands from the content script.
   window.addEventListener("message", (e) => {
@@ -259,6 +269,15 @@
   });
 
   function handleCmd(action, value) {
+    // __resync: the background script reconnected to a fresh native host
+    // (which has empty state). Forget our dedupe key so the next notify()
+    // unconditionally re-sends the current track.
+    if (action === "__resync") {
+      lastTrackKey = "";
+      reported = false;
+      notify();
+      return;
+    }
     const m = pickActiveMedia();
     switch (action) {
       case "play":

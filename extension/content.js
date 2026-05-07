@@ -42,11 +42,17 @@ window.addEventListener("message", (e) => {
 
 // Background → page.
 browser.runtime.onMessage.addListener((msg) => {
-  if (!msg || msg.kind !== "mpris-command") return;
-  window.postMessage(
-    { tag: TAG_IN, action: msg.action, value: msg.value },
-    "*"
-  );
+  if (!msg) return;
+  if (msg.kind === "mpris-command") {
+    window.postMessage(
+      { tag: TAG_IN, action: msg.action, value: msg.value },
+      "*"
+    );
+  } else if (msg.kind === "mpris-resync") {
+    // Host respawned (or this is the first connect). Tell inject.js to
+    // forget its dedupe state and force-send current state.
+    window.postMessage({ tag: TAG_IN, action: "__resync" }, "*");
+  }
 });
 
 // Tell the host to forget us when the page unloads (covers reloads /
