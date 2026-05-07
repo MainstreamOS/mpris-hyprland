@@ -1,0 +1,5 @@
+/host/target
+*.xpi
+firefox-mpris-host.json
+build/
+
