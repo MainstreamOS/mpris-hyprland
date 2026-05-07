@@ -36,6 +36,34 @@ Each tab with active media gets its own MPRIS bus name. `playerctl -l`,
 waybar's `mpris` module, quickshell's `Mpris` service, etc. all see them as
 distinct players, dedup as they wish.
 
+## Supported browsers
+
+Anything Firefox-based that ships unmodified WebExtension + native-messaging
+support. `install.sh` auto-detects which forks are on your system and writes
+the manifest to each one's per-fork directory:
+
+| Browser    | Manifest path (per-user)                        |
+| ---------- | ----------------------------------------------- |
+| Firefox    | `~/.mozilla/native-messaging-hosts/`            |
+| LibreWolf  | `~/.librewolf/native-messaging-hosts/`          |
+| Zen        | `~/.zen/native-messaging-hosts/`                |
+| Floorp     | `~/.floorp/native-messaging-hosts/`             |
+| Waterfox   | `~/.waterfox/native-messaging-hosts/`           |
+
+The bus name prefix this project emits is always `firefox.instance<...>`
+regardless of which fork is running — that's what status bars (waybar,
+quickshell, playerctl, etc.) match against to identify the source.
+
+To force a specific set, use `--browsers`:
+
+```sh
+./install.sh --browsers Zen,Firefox
+./install.sh --all-browsers   # write everywhere, even forks not detected
+```
+
+Tor Browser and Mullvad Browser **are not supported** — they ship with
+WebExtension native-messaging disabled by design (privacy hardening).
+
 ## Install
 
 ### Per-user (recommended for development)
