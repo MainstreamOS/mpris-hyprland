@@ -28,8 +28,51 @@ static DESKTOP_ENTRY: OnceLock<String> = OnceLock::new();
 
 const PLAYER_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
+/// A known browser family. `needles` are substrings of the process `comm` that
+/// identify it; `entry` is the `.desktop` basename MPRIS clients use for the
+/// icon; `segment` is the MPRIS bus-name segment (Firefox-family browsers, incl.
+/// Zen/LibreWolf, publish under org.mpris.MediaPlayer2.firefox.instance<pid>_t<window>
+/// so status bars that special-case the per-window bridge keep matching;
+/// Chromium-family browsers publish under …chromium… so the bridge is distinct
+/// from — and dedups against — Chromium's own native single player); `identity`
+/// is the human-readable MPRIS Identity base.
+struct Browser {
+    needles: &'static [&'static str],
+    entry: &'static str,
+    segment: &'static str,
+    identity: &'static str,
+}
+
+/// Single source of truth for browser families. Order matters for comm matching:
+/// most-specific needles first ("chromium" before "chrome", "google-chrome"
+/// before "chrome") so a comm doesn't fall through to the wrong family.
+const BROWSERS: &[Browser] = &[
+    Browser { needles: &["zen"], entry: "zen", segment: "firefox", identity: "Zen" },
+    Browser { needles: &["librewolf"], entry: "librewolf", segment: "firefox", identity: "LibreWolf" },
+    Browser { needles: &["floorp"], entry: "floorp", segment: "firefox", identity: "Floorp" },
+    Browser { needles: &["waterfox"], entry: "waterfox", segment: "firefox", identity: "Waterfox" },
+    Browser { needles: &["mullvad"], entry: "mullvad-browser", segment: "firefox", identity: "Mullvad Browser" },
+    Browser { needles: &["chromium"], entry: "chromium", segment: "chromium", identity: "Chromium" },
+    Browser { needles: &["brave"], entry: "brave-browser", segment: "chromium", identity: "Brave" },
+    Browser { needles: &["vivaldi"], entry: "vivaldi-stable", segment: "chromium", identity: "Vivaldi" },
+    Browser { needles: &["microsoft-edge", "msedge"], entry: "microsoft-edge", segment: "chromium", identity: "Microsoft Edge" },
+    Browser { needles: &["google-chrome", "chrome"], entry: "google-chrome", segment: "chromium", identity: "Google Chrome" },
+    Browser { needles: &["opera"], entry: "opera", segment: "chromium", identity: "Opera" },
+    Browser { needles: &["firefox"], entry: "firefox", segment: "firefox", identity: "Firefox" },
+];
+
+/// The detected browser's `.desktop` basename, or "firefox" before init / when unknown.
+fn desktop_entry() -> &'static str {
+    DESKTOP_ENTRY.get().map(String::as_str).unwrap_or("firefox")
+}
+
+/// The detected browser's family record, if it's a known one.
+fn detected_browser() -> Option<&'static Browser> {
+    BROWSERS.iter().find(|b| b.entry == desktop_entry())
+}
+
 /// Detect the browser's .desktop basename so MPRIS clients resolve the correct
-/// icon. Order: $FIREFOX_MPRIS_DESKTOP_ENTRY override → parent process name
+/// icon. Order: $FIREFOX_MPRIS_DESKTOP_ENTRY override → parent process comm
 /// (the host is a child of the browser) → "firefox". On Zen the parent comm is
 /// "zen-bin" and the desktop file is zen.desktop, so plain "firefox" would
 /// leave clients with a generic icon.
@@ -40,61 +83,22 @@ fn detect_desktop_entry() -> String {
         }
     }
     let parent_comm = parent_comm().unwrap_or_default().to_ascii_lowercase();
-    // Most-specific needles first. "chromium" before "chrome" (so the chromium
-    // comm doesn't fall through), and "google-chrome" before "chrome".
-    for (needle, entry) in [
-        ("zen", "zen"),
-        ("librewolf", "librewolf"),
-        ("floorp", "floorp"),
-        ("waterfox", "waterfox"),
-        ("mullvad", "mullvad-browser"),
-        ("chromium", "chromium"),
-        ("brave", "brave-browser"),
-        ("vivaldi", "vivaldi-stable"),
-        ("microsoft-edge", "microsoft-edge"),
-        ("msedge", "microsoft-edge"),
-        ("google-chrome", "google-chrome"),
-        ("chrome", "google-chrome"),
-        ("opera", "opera"),
-        ("firefox", "firefox"),
-    ] {
-        if parent_comm.contains(needle) {
-            return entry.to_string();
-        }
-    }
-    "firefox".to_string()
+    BROWSERS
+        .iter()
+        .find(|b| b.needles.iter().any(|n| parent_comm.contains(n)))
+        .map(|b| b.entry)
+        .unwrap_or("firefox")
+        .to_string()
 }
 
-/// MPRIS bus-name segment for the detected browser family. Firefox-family
-/// browsers (incl. Zen/LibreWolf) publish under
-/// org.mpris.MediaPlayer2.firefox.instance<pid>_t<window> so status bars that
-/// special-case the per-window bridge keep matching; Chromium-family browsers
-/// publish under ...chromium... so the bridge is distinct from — and dedups
-/// against — Chromium's own native single MPRIS player.
-fn bus_segment(desktop_entry: &str) -> &'static str {
-    match desktop_entry {
-        "chromium" | "google-chrome" | "brave-browser" | "vivaldi-stable"
-        | "microsoft-edge" | "opera" => "chromium",
-        _ => "firefox",
-    }
+/// MPRIS bus-name segment for the detected browser family (see `Browser`).
+fn bus_segment() -> &'static str {
+    detected_browser().map(|b| b.segment).unwrap_or("firefox")
 }
 
 /// Human-readable MPRIS Identity base for the detected browser family.
 fn app_identity() -> &'static str {
-    match DESKTOP_ENTRY.get().map(String::as_str).unwrap_or("firefox") {
-        "chromium" => "Chromium",
-        "google-chrome" => "Google Chrome",
-        "brave-browser" => "Brave",
-        "vivaldi-stable" => "Vivaldi",
-        "microsoft-edge" => "Microsoft Edge",
-        "opera" => "Opera",
-        "zen" => "Zen",
-        "librewolf" => "LibreWolf",
-        "floorp" => "Floorp",
-        "waterfox" => "Waterfox",
-        "mullvad-browser" => "Mullvad Browser",
-        _ => "Firefox",
-    }
+    detected_browser().map(|b| b.identity).unwrap_or("Firefox")
 }
 
 /// Read the parent process's `comm` (its short name) via /proc.
@@ -220,7 +224,7 @@ async fn main() -> Result<()> {
     log::info!("log file: {}", log_path.display());
     log::info!(
         "desktop entry: {} (override with FIREFOX_MPRIS_DESKTOP_ENTRY)",
-        DESKTOP_ENTRY.get().map(String::as_str).unwrap_or("firefox")
+        desktop_entry()
     );
     log::info!(
         "RUST_LOG: {}",
@@ -382,13 +386,9 @@ async fn create_player(
     // append _f<frame> so an embedded player gets its own bus name instead of
     // clobbering the top document's. unsigned_abs keeps the name valid for the
     // (shouldn't-happen) negative id case.
-    let segment = DESKTOP_ENTRY
-        .get()
-        .map(|e| bus_segment(e))
-        .unwrap_or("firefox");
     let mut bus_name = format!(
         "org.mpris.MediaPlayer2.{}.instance{}_t{}",
-        segment,
+        bus_segment(),
         process::id(),
         key.tab_id.unsigned_abs()
     );
@@ -408,10 +408,7 @@ async fn create_player(
     };
     let root_iface = mpris_root::RootIface {
         identity,
-        desktop_entry: DESKTOP_ENTRY
-            .get()
-            .cloned()
-            .unwrap_or_else(|| "firefox".to_string()),
+        desktop_entry: desktop_entry().to_string(),
         cmd_tx,
         tab_id: key.tab_id,
         frame_id: key.frame_id,

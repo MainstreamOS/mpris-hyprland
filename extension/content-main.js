@@ -35,6 +35,9 @@
   const ACTIONS = ["play", "pause", "playpause", "stop", "nexttrack",
     "previoustrack", "seekto", "seekbackward", "seekforward"];
 
+  // Twin of content.js readMetadata() (the Firefox Xray path): same
+  // {title,artist,album,artwork,playbackState} shape. They can't share a module
+  // (different JS realms), so keep the two in sync when the shape changes.
   function snapshotMeta() {
     try {
       const md = ms.metadata;
