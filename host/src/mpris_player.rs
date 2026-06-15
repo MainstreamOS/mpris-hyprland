@@ -18,23 +18,12 @@ pub struct PlayerIface {
 
 impl PlayerIface {
     fn send(&self, action: Action, value: Option<f64>) {
-        log::info!(
-            "[dbus→ext] tab={} frame={} action={action:?} value={value:?}",
-            self.tab_id,
-            self.frame_id
-        );
-        if let Err(e) = self.cmd_tx.send(OutMessage::Command {
+        let _ = self.cmd_tx.send(OutMessage::Command {
             tab_id: self.tab_id,
             frame_id: self.frame_id,
             action,
             value,
-        }) {
-            log::warn!(
-                "[dbus→ext] tab={} frame={} action={action:?} channel send failed: {e}",
-                self.tab_id,
-                self.frame_id
-            );
-        }
+        });
     }
 
     /// True when there's something playable loaded — drives Can* and the

@@ -39,16 +39,6 @@
   // runs in this isolated world identically on both browsers.
   const XRAY = typeof exportFunction === "function";
 
-  // ---- DEBUG (unified across background + content via storage.local.debug) --
-  let DEBUG = false;
-  const tag = `[mpris-cs ${location.host || location.protocol}]`;
-  const dbg = (...a) => { if (DEBUG) console.debug(tag, ...a); };
-  const info = (...a) => { if (DEBUG) console.log(tag, ...a); };
-  const warn = (...a) => console.warn(tag, ...a);
-  browser.storage.local.get({ debug: false })
-    .then((r) => { DEBUG = !!r.debug; if (DEBUG) info(`content loaded on ${location.href}`); })
-    .catch(() => {});
-
   // ---- page-realm access (Firefox Xray) -----------------------------------
   function pageMediaSession() {
     if (!XRAY) return null; // Chromium: data arrives via the postMessage bridge
@@ -74,7 +64,7 @@
   // content-main.js does the equivalent patching in the page realm.
   if (XRAY) (function patchMediaSession() {
     const ms = pageMediaSession();
-    if (!ms) { dbg("no navigator.mediaSession to patch"); return; }
+    if (!ms) { return; }
     const win = window.wrappedJSObject;
 
     try {
@@ -87,8 +77,7 @@
         scheduleNotify();
         return orig(action, handler);
       }, win);
-      dbg("setActionHandler patched");
-    } catch (e) { warn("setActionHandler patch failed:", e); }
+    } catch (_) {}
 
     // metadata setter → notify on assignment (catches paused-tab track changes
     // that no media event would surface).
@@ -101,9 +90,8 @@
           get: d.get,
           set: exportFunction(function (v) { d.set.call(this, v); scheduleNotify(); }, win),
         });
-        dbg("metadata setter patched");
       }
-    } catch (e) { dbg("metadata setter patch skipped:", e && e.message); }
+    } catch (_) {}
 
     // playbackState setter → notify.
     try {
@@ -199,13 +187,11 @@
       if (!anyPlaying()) { stopPositionTicker(); }
       scheduleNotify();
     }, 1000);
-    dbg("position ticker started");
   }
   function stopPositionTicker() {
     if (!positionTimer) return;
     clearInterval(positionTimer);
     positionTimer = null;
-    dbg("position ticker stopped");
   }
 
   let seekedSinceNotify = false;
@@ -228,7 +214,6 @@
      "volumechange", "ended", "loadedmetadata", "ratechange", "emptied"]
       .forEach((ev) => m.addEventListener(ev, onMediaEvent, true));
     if (!m.paused && !m.ended) startPositionTicker();
-    dbg("hooked", m.tagName.toLowerCase());
   }
 
   function allMedia() {
@@ -440,16 +425,12 @@
       // only on a real field change.
       if (key === lastKey && !seeked) { return; }
       lastKey = key;
-      const first = !reported;
       reported = true;
       delete track._hasMeta;
       delete track._hasRealMedia;
-      browser.runtime.sendMessage({ kind: "update", track })
-        .catch((e) => dbg("sendMessage(update) failed:", e && e.message));
-      if (first) info(`→ first report: title=${JSON.stringify(track.title)} playing=${track.playing} art=${track.artUrl ? "y" : "n"}`);
+      browser.runtime.sendMessage({ kind: "update", track }).catch(() => {});
     } else if (reported) {
       reported = false; lastKey = "";
-      info("→ remove (no media)");
       browser.runtime.sendMessage({ kind: "remove" }).catch(() => {});
     }
   }
@@ -471,7 +452,7 @@
     const h = handlers[name];
     if (!h) return false;
     if (!XRAY) { postToMain({ type: "invoke", name }); return true; }
-    try { h(); return true; } catch (e) { warn(`handler ${name} threw:`, e); return false; }
+    try { h(); return true; } catch (_) { return false; }
   }
 
   // Invoke a MediaSession seek handler with its detail object, used when there
@@ -486,11 +467,10 @@
       const arg = (typeof cloneInto === "function") ? cloneInto(detail, window) : detail;
       h(arg);
       return true;
-    } catch (e) { warn(`seek handler ${name} threw:`, e); return false; }
+    } catch (_) { return false; }
   }
 
   function handleCommand(action, value) {
-    dbg(`cmd ${action}${value !== undefined ? ` value=${value}` : ""}`);
     const m = pickActiveMedia();
     switch (action) {
       case "play": if (!callHandler("play") && m) m.play().catch(() => {}); break;
@@ -546,7 +526,6 @@
     if (!msg) return;
     if (msg.kind === "mpris-command") handleCommand(msg.action, msg.value);
     else if (msg.kind === "mpris-resync") handleCommand("__resync");
-    else if (msg.kind === "debug-changed") { DEBUG = !!msg.debug; }
   });
 
   // ---- navigation & lifecycle ----------------------------------------------

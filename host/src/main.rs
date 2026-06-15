@@ -17,7 +17,6 @@ use anyhow::{Context, Result};
 use protocol::{InMessage, OutMessage, PlayerKey, TrackInfo};
 use state::{lock_state, PlayerHandle, PlayerState, PositionDelta, UpdateOutcome};
 use std::collections::HashMap;
-use std::io::Write;
 use std::process;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::io::BufWriter;
@@ -114,123 +113,11 @@ fn parent_comm() -> Option<String> {
 
 type PlayerMap = Arc<AsyncMutex<HashMap<PlayerKey, Arc<PlayerHandle>>>>;
 
-/// Tee writer: forwards each log write to BOTH stderr (in case the browser
-/// is forwarding it somewhere visible) AND a persistent log file (so we
-/// have a reliable diagnostic trail even when the browser drops stderr,
-/// which Firefox-family browsers do whenever an already-running instance
-/// handles the launch).
-struct TeeWriter {
-    stderr: std::io::Stderr,
-    file: std::fs::File,
-}
-
-impl Write for TeeWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let _ = self.stderr.write_all(buf);
-        self.file.write_all(buf)?;
-        Ok(buf.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        let _ = self.stderr.flush();
-        self.file.flush()
-    }
-}
-
-/// Resolve the log file path, in order of preference:
-///   1. $MPRIS_HYPRLAND_HOST_LOG (explicit override)
-///   2. $XDG_STATE_HOME/mpris-hyprland-host/host.log
-///   3. $HOME/.local/state/mpris-hyprland-host/host.log
-///   4. /tmp/mpris-hyprland-host.log
-fn resolve_log_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("MPRIS_HYPRLAND_HOST_LOG") {
-        if !p.is_empty() {
-            return p.into();
-        }
-    }
-    let state_home = std::env::var("XDG_STATE_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.local/state")));
-    match state_home {
-        Some(home) => format!("{home}/mpris-hyprland-host/host.log").into(),
-        None => "/tmp/mpris-hyprland-host.log".into(),
-    }
-}
-
-/// Set up env_logger writing to stderr-tee-file. Returns the resolved log
-/// path so the banner can mention it.
-fn setup_logging() -> Result<std::path::PathBuf> {
-    let log_path = resolve_log_path();
-
-    if let Some(parent) = log_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    // Cap log size to prevent unbounded growth (10 MiB). On overflow we
-    // rename the existing file to host.log.1 so the most recent run is
-    // still recoverable, then truncate.
-    if let Ok(meta) = std::fs::metadata(&log_path) {
-        if meta.len() > 10 * 1024 * 1024 {
-            let mut backup = log_path.clone();
-            backup.set_extension("log.1");
-            let _ = std::fs::rename(&log_path, &backup);
-        }
-    }
-
-    let log_file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("opening log file {}", log_path.display()))?;
-
-    let tee = TeeWriter {
-        stderr: std::io::stderr(),
-        file: log_file,
-    };
-
-    // Default to info: routine per-message frames are at debug/trace, so info
-    // is a quiet-but-useful baseline (lifecycle, player create/remove, D-Bus
-    // method calls). Crank with RUST_LOG=mpris_hyprland_host=trace.
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("mpris_hyprland_host=info,warn"),
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Pipe(Box::new(tee)))
-    .init();
-
-    Ok(log_path)
-}
-
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     // STDOUT is the native messaging channel and must remain pristine
-    // length-prefixed JSON. We log via env_logger to a Tee that writes to
-    // both stderr (in case the browser forwards it) and a persistent file at
-    // ~/.local/state/mpris-hyprland-host/host.log (always works).
-    //
-    // Override the log filter via RUST_LOG, e.g.:
-    //   RUST_LOG=mpris_hyprland_host=trace zen-browser
-    //   RUST_LOG=trace zen-browser   (everything, including zbus)
-    // Override the file path via MPRIS_HYPRLAND_HOST_LOG.
-    let log_path = setup_logging()?;
+    // length-prefixed JSON.
     let _ = DESKTOP_ENTRY.set(detect_desktop_entry());
-
-    log::info!("================================================================");
-    log::info!(
-        "mpris-hyprland-host v{} starting (pid {})",
-        env!("CARGO_PKG_VERSION"),
-        process::id()
-    );
-    log::info!("log file: {}", log_path.display());
-    log::info!(
-        "desktop entry: {} (override with MPRIS_HYPRLAND_DESKTOP_ENTRY)",
-        desktop_entry()
-    );
-    log::info!(
-        "RUST_LOG: {}",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "(default = mpris_hyprland_host=info,warn)".into())
-    );
-    log::info!("================================================================");
 
     let players: PlayerMap = Arc::new(AsyncMutex::new(HashMap::new()));
 
@@ -241,61 +128,39 @@ async fn main() -> Result<()> {
     let writer_task = tokio::spawn(async move {
         let stdout = tokio::io::stdout();
         let mut out = BufWriter::new(stdout);
-        let mut written: u64 = 0;
         while let Some(msg) = cmd_rx.recv().await {
-            log::debug!("[host→ext] {msg:?}");
             let bytes = match serde_json::to_vec(&msg) {
                 Ok(b) => b,
-                Err(e) => {
-                    log::warn!("[host→ext] serialize failed: {e}");
+                Err(_) => {
                     continue;
                 }
             };
-            log::trace!("[host→ext] {} bytes", bytes.len());
-            if let Err(e) = messaging::write_message(&mut out, &bytes).await {
-                log::error!("[host→ext] write stdout failed after {written} message(s): {e}");
+            if messaging::write_message(&mut out, &bytes).await.is_err() {
                 break;
             }
-            written += 1;
         }
-        log::info!("writer task exiting after {written} message(s)");
     });
 
     let mut stdin = tokio::io::stdin();
-    let mut received: u64 = 0;
     loop {
         let payload = match messaging::read_message(&mut stdin).await {
             Ok(Some(p)) => p,
             Ok(None) => {
-                log::info!(
-                    "stdin EOF — browser has gone away, shutting down (received {received} message(s))"
-                );
                 break;
             }
-            Err(e) => {
-                log::error!("read stdin: {e}");
+            Err(_) => {
                 break;
             }
         };
-        received += 1;
-
-        log::trace!("[ext→host] frame {received} ({} bytes)", payload.len());
 
         let msg: InMessage = match serde_json::from_slice(&payload) {
             Ok(m) => m,
-            Err(e) => {
-                log::warn!(
-                    "[ext→host] invalid JSON ({} bytes): {e} — payload: {}",
-                    payload.len(),
-                    String::from_utf8_lossy(&payload)
-                );
+            Err(_) => {
                 continue;
             }
         };
 
-        if let Err(e) = handle_message(msg, &players, &cmd_tx).await {
-            log::error!("handle_message: {e:#}");
-        }
+        let _ = handle_message(msg, &players, &cmd_tx).await;
     }
 
     // Clean up: drop all player connections, then close the writer.
@@ -305,7 +170,6 @@ async fn main() -> Result<()> {
     }
     drop(cmd_tx);
     let _ = writer_task.await;
-    log::info!("mpris-hyprland-host exited cleanly");
     Ok(())
 }
 
@@ -315,14 +179,8 @@ async fn handle_message(
     cmd_tx: &mpsc::UnboundedSender<OutMessage>,
 ) -> Result<()> {
     match msg {
-        InMessage::Hello { version } => {
-            log::info!("[hello] extension connected, version={version:?}");
-            let n = players.lock().await.len();
-            log::info!("[hello] currently tracking {n} player(s)");
-        }
-        InMessage::Ping => {
-            log::trace!("[ping]");
-        }
+        InMessage::Hello { version: _ } => {}
+        InMessage::Ping => {}
         InMessage::Update {
             tab_id,
             frame_id,
@@ -333,30 +191,14 @@ async fn handle_message(
                 let guard = players.lock().await;
                 guard.get(&key).cloned()
             };
-            log::debug!(
-                "[update] tab={tab_id} frame={frame_id} title={:?} artist={:?} dur={:.1}s pos={:.1}s playing={} rate={:.2} loop={} canSeek={} canNext={} canPrev={} art={}",
-                track.title,
-                track.artist,
-                track.duration,
-                track.position,
-                track.playing,
-                track.rate,
-                track.looping,
-                track.can_seek,
-                track.can_go_next,
-                track.can_go_previous,
-                if track.art_url.is_empty() { "(none)" } else { "(present)" }
-            );
             match existing {
                 Some(handle) => {
                     update_existing(&handle, track).await?;
                 }
                 None => {
-                    log::info!("[update] tab={tab_id} frame={frame_id} → no existing player, creating");
                     let handle = create_player(key, track, cmd_tx.clone()).await?;
                     let mut guard = players.lock().await;
                     guard.insert(key, handle);
-                    log::debug!("[update] → player count now {}", guard.len());
                 }
             }
         }
@@ -364,13 +206,7 @@ async fn handle_message(
             let key = PlayerKey { tab_id, frame_id };
             let mut guard = players.lock().await;
             if let Some(handle) = guard.remove(&key) {
-                log::info!(
-                    "[remove] tab={tab_id} frame={frame_id} (player count now {})",
-                    guard.len()
-                );
                 drop(handle);
-            } else {
-                log::debug!("[remove] tab={tab_id} frame={frame_id} but no player tracked — ignoring");
             }
         }
     }
@@ -414,7 +250,6 @@ async fn create_player(
         frame_id: key.frame_id,
     };
 
-    log::trace!("[create_player] requesting name {bus_name}");
     // One zbus connection per player. With zbus's `tokio` feature this does
     // NOT spawn an OS thread per connection (the internal executor is a no-op;
     // tasks run on the shared tokio runtime), so the per-player model is cheap.
@@ -433,17 +268,8 @@ async fn create_player(
         .await
         .context("build connection")?;
 
-    log::info!(
-        "[create_player] tab={} frame={} bus={}",
-        key.tab_id,
-        key.frame_id,
-        bus_name
-    );
-
     Ok(Arc::new(PlayerHandle {
         state,
-        tab_id: key.tab_id,
-        frame_id: key.frame_id,
         _connection: conn,
     }))
 }
@@ -457,7 +283,6 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
     // Nothing to announce — steady-state playback. Position is read on demand
     // by clients, never pushed, so this is the common no-traffic path.
     if !changed.any() && matches!(position, PositionDelta::Continuous) {
-        log::trace!("[update_existing] tab={} frame={} → no signals", handle.tab_id, handle.frame_id);
         return Ok(());
     }
 
@@ -507,12 +332,6 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
     }
 
     if let PositionDelta::Seeked(pos_us) = position {
-        log::debug!(
-            "[update_existing] tab={} frame={} → Seeked({:.2}s)",
-            handle.tab_id,
-            handle.frame_id,
-            pos_us as f64 / 1_000_000.0
-        );
         let emitter = iface_ref.signal_emitter().to_owned();
         mpris_player::PlayerIface::seeked(&emitter, pos_us).await.ok();
     }

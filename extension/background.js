@@ -26,37 +26,9 @@ const browser = globalThis.browser ?? chrome;
 const HOST_NAME = "io.github.mainstreamos.firefox_mpris_hyprland";
 const VERSION = "0.2.0";
 
-// DEBUG default OFF (production). Toggle from the extension's Inspect console:
-//   mprisDebug(true) / mprisDebug(false)   — persisted + broadcast live to all
-//   content scripts via storage.local.debug, so one switch flips every layer.
-let DEBUG = false;
-browser.storage.local.get({ debug: false }).then((r) => { DEBUG = !!r.debug; }).catch(() => {});
-
-globalThis.mprisDebug = (on) => {
-  DEBUG = !!on;
-  browser.storage.local.set({ debug: DEBUG }).catch(() => {});
-  // Push the new flag to every already-loaded content script (no reload).
-  browser.tabs.query({}).then((tabs) => {
-    for (const t of tabs) {
-      if (typeof t.id === "number") {
-        browser.tabs.sendMessage(t.id, { kind: "debug-changed", debug: DEBUG }).catch(() => {});
-      }
-    }
-  }).catch(() => {});
-  info(`DEBUG=${DEBUG}`);
-  return DEBUG;
-};
-
-function ts() { return new Date().toISOString().slice(11, 23); }
-function info(...a) { console.log(`[mpris-bg ${ts()}]`, ...a); }
-function warn(...a) { console.warn(`[mpris-bg ${ts()}]`, ...a); }
-function dbg(...a) { if (DEBUG) console.debug(`[mpris-bg ${ts()}]`, ...a); }
-
 /** @type {browser.runtime.Port | null} */
 let hostPort = null;
 let reconnectDelayMs = 500;
-let connectionGen = 0;
-let msgsOut = 0, msgsIn = 0;
 
 // Per-WINDOW players. Each browser window gets exactly one MPRIS player,
 // reflecting that window's active media: the playing frame, else the most
@@ -96,7 +68,6 @@ function syncWindow(windowId) {
   if (!rep) {
     if (prev) {
       windowState.delete(windowId);
-      info(`- window ${windowId} (no media; ${windowState.size} window player(s))`);
       send({ type: "remove", tabId: windowId, frameId: 0 });
     }
     return;
@@ -104,7 +75,6 @@ function syncWindow(windowId) {
   const repKey = keyOf(rep.tabId, rep.frameId);
   const sig = JSON.stringify(rep.track);
   if (prev && prev.repKey === repKey && prev.sig === sig) return; // unchanged
-  if (!prev) info(`+ window ${windowId} player (${windowState.size + 1} total)`);
   windowState.set(windowId, { repKey, sig, tabId: rep.tabId, frameId: rep.frameId });
   send({ type: "update", tabId: windowId, frameId: 0, ...rep.track });
 }
@@ -120,34 +90,26 @@ function ensureConnected() {
 }
 
 function connectHost() {
-  connectionGen += 1;
-  const gen = connectionGen;
   try {
-    dbg(`gen=${gen} connecting to ${HOST_NAME}`);
     hostPort = browser.runtime.connectNative(HOST_NAME);
-  } catch (e) {
-    warn(`gen=${gen} connectNative threw:`, e);
+  } catch {
     scheduleReconnect();
     return;
   }
 
   hostPort.onMessage.addListener(handleHostMessage);
   hostPort.onDisconnect.addListener(() => {
-    const err = browser.runtime.lastError || hostPort?.error;
-    info(`gen=${gen} host disconnected after ${msgsOut} out / ${msgsIn} in:`, err || "(clean)");
     hostPort = null;
     scheduleReconnect();
   });
 
   reconnectDelayMs = 500;
-  msgsOut = 0; msgsIn = 0;
   send({ type: "hello", version: VERSION });
 
   // Re-push each window's representative to the fresh host (empty after a
   // respawn), then broadcast a resync as a backstop for anything missed.
   windowState.clear();
   syncAllWindows();
-  info(`gen=${gen} connected; ${windowState.size} window player(s) replayed`);
   resyncAllTabs();
 }
 
@@ -158,42 +120,33 @@ function resyncAllTabs() {
         browser.tabs.sendMessage(t.id, { kind: "mpris-resync" }).catch(() => {});
       }
     }
-  }).catch((e) => dbg("tabs.query failed:", e));
+  }).catch(() => {});
 }
 
 function scheduleReconnect() {
   const delay = reconnectDelayMs;
   reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000); // host is local — recover fast
-  dbg(`reconnect in ${delay}ms (next ${reconnectDelayMs}ms)`);
   setTimeout(ensureConnected, delay);
 }
 
 function send(msg) {
-  if (!hostPort) { dbg(`send: no port, dropping ${msg.type}`); return false; }
+  if (!hostPort) { return false; }
   try {
     hostPort.postMessage(msg);
-    msgsOut += 1;
-    if (msg.type === "update") {
-      dbg(`[ext→host] update window=${msg.tabId} title=${JSON.stringify(msg.title || "")} playing=${msg.playing}`);
-    } else {
-      dbg(`[ext→host] ${msg.type}`, msg);
-    }
     return true;
-  } catch (e) { warn("postMessage failed:", e); return false; }
+  } catch { return false; }
 }
 
 // Commands from the host: {type:"command", tabId:<windowId>, action, value?}.
 // The id is a windowId; route to that window's current representative frame.
 function handleHostMessage(msg) {
-  msgsIn += 1;
   if (!msg || typeof msg !== "object" || msg.type !== "command") {
-    dbg(`[host→ext] ignoring:`, msg); return;
+    return;
   }
   const windowId = msg.tabId, action = msg.action, value = msg.value;
-  if (typeof windowId !== "number") { warn("command without window id:", msg); return; }
+  if (typeof windowId !== "number") { return; }
   const ws = windowState.get(windowId);
-  if (!ws) { dbg(`[host→ext] command for window ${windowId} with no representative`); return; }
-  dbg(`[host→ext] window=${windowId} → tab=${ws.tabId} frame=${ws.frameId} ${action}`);
+  if (!ws) { return; }
 
   // Raise is ours to handle — focus the representative's tab + window.
   if (action === "raise") {
@@ -201,12 +154,12 @@ function handleHostMessage(msg) {
       if (tab && typeof tab.windowId === "number") {
         browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
       }
-    }).catch((e) => dbg(`raise tab ${ws.tabId} failed:`, e && e.message));
+    }).catch(() => {});
     return;
   }
 
   browser.tabs.sendMessage(ws.tabId, { kind: "mpris-command", action, value }, { frameId: ws.frameId })
-    .catch((e) => dbg(`cmd ${action} → tab ${ws.tabId} frame ${ws.frameId} failed:`, e && e.message));
+    .catch(() => {});
 }
 
 // Updates/removes from content scripts. Tracked per frame; consolidated to one
@@ -242,5 +195,4 @@ browser.tabs.onRemoved.addListener((tabId) => {
 // each top-level load (wake). ensureConnected() is idempotent.
 browser.runtime.onStartup.addListener(ensureConnected);
 browser.runtime.onInstalled.addListener(ensureConnected);
-info("background loaded — connecting to native host");
 ensureConnected();

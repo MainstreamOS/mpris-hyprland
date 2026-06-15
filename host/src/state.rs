@@ -140,19 +140,6 @@ impl PlayerState {
             can_play_pause: old_has_content != new_has_content,
         };
 
-        if changed.any() {
-            log::debug!(
-                "[apply_update] changed: {} (playing {}→{}, drift_us={drift_us})",
-                describe_changed(&changed),
-                self.track.playing,
-                new_track.playing,
-            );
-        } else {
-            log::trace!(
-                "[apply_update] no property change (drift_us={drift_us}, predicted={predicted_us}us, reported={new_pos_us}us)"
-            );
-        }
-
         self.track = new_track;
         self.last_position_us = new_pos_us;
         self.last_position_at = now;
@@ -194,38 +181,6 @@ impl PlayerState {
     }
 }
 
-fn describe_changed(c: &Changed) -> String {
-    let mut v = Vec::new();
-    if c.metadata {
-        v.push("Metadata");
-    }
-    if c.playback_status {
-        v.push("PlaybackStatus");
-    }
-    if c.volume {
-        v.push("Volume");
-    }
-    if c.rate {
-        v.push("Rate");
-    }
-    if c.loop_status {
-        v.push("LoopStatus");
-    }
-    if c.can_seek {
-        v.push("CanSeek");
-    }
-    if c.can_go_next {
-        v.push("CanGoNext");
-    }
-    if c.can_go_previous {
-        v.push("CanGoPrevious");
-    }
-    if c.can_play_pause {
-        v.push("CanPlay/CanPause");
-    }
-    format!("[{}]", v.join(","))
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum PositionDelta {
     Continuous,
@@ -240,8 +195,6 @@ pub struct PlayerHandle {
     /// Shared with the `PlayerIface` registered on the connection's object
     /// server, so the dispatcher can mutate state and the iface can read it.
     pub state: Arc<Mutex<PlayerState>>,
-    pub tab_id: i64,
-    pub frame_id: i64,
     /// D-Bus connection holding our well-known name. Dropping this releases
     /// the bus name, which is the cleanest way to "remove" the player —
     /// MPRIS clients see NameOwnerChanged and drop their entry.

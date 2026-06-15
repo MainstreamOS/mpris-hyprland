@@ -22,11 +22,6 @@ impl RootIface {
     /// relay this to the background script, which focuses the owning tab and
     /// window (browser.tabs.update + windows.update).
     async fn raise(&self) {
-        log::info!(
-            "[dbus→ext] tab={} frame={} action=Raise",
-            self.tab_id,
-            self.frame_id
-        );
         let _ = self.cmd_tx.send(OutMessage::Command {
             tab_id: self.tab_id,
             frame_id: self.frame_id,
