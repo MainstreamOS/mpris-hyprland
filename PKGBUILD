@@ -1,11 +1,14 @@
 # Maintainer: blackdroid <blackdriod@gmail.com>
-pkgname=firefox-mpris-hyprland
+pkgname=mpris-hyprland
 pkgver=0.2.0
 pkgrel=3
 pkgdesc="Per-window MPRIS bridge for Firefox/Zen and Chromium — Media Session metadata, position, artwork, per-tab volume on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
 arch=('x86_64' 'aarch64')
-url="https://github.com/MainstreamOS/firefox-mpris-hyprland"
+url="https://github.com/MainstreamOS/mpris-hyprland"
 license=('MIT')
+replaces=('firefox-mpris-hyprland')
+conflicts=('firefox-mpris-hyprland')
+provides=('firefox-mpris-hyprland')
 depends=('dbus')
 optdepends=(
     'firefox: the browser this bridges (or any Firefox fork)'
@@ -30,14 +33,14 @@ package() {
     cd "$srcdir/$pkgname"
 
     # ── native host binary ──────────────────────────────────────────────────
-    install -Dm0755 host/target/release/firefox-mpris-host \
-        "$pkgdir/usr/bin/firefox-mpris-host"
+    install -Dm0755 host/target/release/mpris-hyprland-host \
+        "$pkgdir/usr/bin/mpris-hyprland-host"
 
     # ── native messaging manifest (system-wide) ─────────────────────────────
     # Firefox and forks (including Zen) read /usr/lib/mozilla/native-messaging-hosts/
     # in addition to the per-user dir, so one system manifest covers them all.
-    sed 's|@HOST_BINARY@|/usr/bin/firefox-mpris-host|g' \
-        packaging/firefox-mpris-host.json.in \
+    sed 's|@HOST_BINARY@|/usr/bin/mpris-hyprland-host|g' \
+        packaging/firefox-host.json.in \
         | install -Dm0644 /dev/stdin \
             "$pkgdir/usr/lib/mozilla/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
 
@@ -46,13 +49,13 @@ package() {
     # AMO) so the policy auto-installs it on vanilla Firefox too. Without it,
     # ship an unsigned zip — which auto-installs only on Zen and other unbranded
     # forks (Firefox rejects unsigned, even via policy).
-    if [[ -f dist/firefox-mpris-hyprland.xpi ]]; then
-        install -Dm0644 dist/firefox-mpris-hyprland.xpi \
-            "$pkgdir/usr/share/$pkgname/firefox-mpris-hyprland.xpi"
+    if [[ -f dist/mpris-hyprland.xpi ]]; then
+        install -Dm0644 dist/mpris-hyprland.xpi \
+            "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
     else
-        ( cd extension && zip -qr "$srcdir/firefox-mpris-hyprland.xpi" . -x '*.DS_Store' )
-        install -Dm0644 "$srcdir/firefox-mpris-hyprland.xpi" \
-            "$pkgdir/usr/share/$pkgname/firefox-mpris-hyprland.xpi"
+        ( cd extension && zip -qr "$srcdir/mpris-hyprland.xpi" . -x '*.DS_Store' )
+        install -Dm0644 "$srcdir/mpris-hyprland.xpi" \
+            "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
     fi
 
     # ── browser policies to auto-install the extension (unsigned) ───────────
@@ -70,15 +73,15 @@ package() {
         "$pkgdir/etc/firefox/policies/policies.json"
 
     local crx_id="ckiplbjpfoaeijjpijkpmhcmdfolhonm"
-    if [[ -f dist/firefox-mpris-hyprland.crx ]]; then
-        install -Dm0644 dist/firefox-mpris-hyprland.crx \
+    if [[ -f dist/mpris-hyprland.crx ]]; then
+        install -Dm0644 dist/mpris-hyprland.crx \
             "$pkgdir/usr/share/chromium/extensions/${crx_id}.crx"
         printf '{\n  "external_crx": "/usr/share/chromium/extensions/%s.crx",\n  "external_version": "%s"\n}\n' \
             "$crx_id" "$pkgver" \
             | install -Dm0644 /dev/stdin \
                 "$pkgdir/usr/share/chromium/extensions/${crx_id}.json"
-        sed 's|@HOST_BINARY@|/usr/bin/firefox-mpris-host|g' \
-            packaging/chromium-mpris-host.json.in \
+        sed 's|@HOST_BINARY@|/usr/bin/mpris-hyprland-host|g' \
+            packaging/chromium-host.json.in \
             | install -Dm0644 /dev/stdin \
                 "$pkgdir/etc/chromium/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
     fi

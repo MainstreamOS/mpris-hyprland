@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build and install firefox-mpris-hyprland for the current user.
+# Build and install mpris-hyprland for the current user.
 #
 # Layout (per-user install — no sudo needed):
-#   ~/.local/bin/firefox-mpris-host
+#   ~/.local/bin/mpris-hyprland-host
 #   ~/.mozilla/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json
 #
 # After running this script you still need to load the WebExtension into
@@ -80,9 +80,9 @@ Options:
   -h, --help          Show this help
 
 Files installed:
-  \$prefix/bin/firefox-mpris-host
+  \$prefix/bin/mpris-hyprland-host
   ~/.<browser>/native-messaging-hosts/${HOST_NAME}.json   (one per fork)
-  ./build/firefox-mpris-hyprland.zip                      (load manually in browser)
+  ./build/mpris-hyprland.zip                      (load manually in browser)
 
 Supported browsers: Firefox, LibreWolf, Zen, Floorp, Waterfox
 EOF
@@ -102,7 +102,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 BIN_DIR="${INSTALL_PREFIX}/bin"
-HOST_BIN="${BIN_DIR}/firefox-mpris-host"
+HOST_BIN="${BIN_DIR}/mpris-hyprland-host"
 
 # ---------- pick which browsers to install for ----------------------------
 #
@@ -176,7 +176,7 @@ fi
 # ---------- build extension zip -------------------------------------------
 
 mkdir -p build
-EXT_ZIP="${PROJECT_ROOT}/build/firefox-mpris-hyprland.zip"
+EXT_ZIP="${PROJECT_ROOT}/build/mpris-hyprland.zip"
 rm -f "$EXT_ZIP"
 ( cd extension && zip -qr "$EXT_ZIP" . -x '*.DS_Store' )
 echo "→ extension package: $EXT_ZIP"
@@ -192,7 +192,7 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
     ( cd host && cargo build --release )
 fi
 
-HOST_SOURCE="host/target/release/firefox-mpris-host"
+HOST_SOURCE="host/target/release/mpris-hyprland-host"
 if [[ ! -x "$HOST_SOURCE" ]]; then
     echo "host binary not found at $HOST_SOURCE — run without --skip-build" >&2
     exit 1
@@ -213,7 +213,7 @@ for t in "${TARGETS[@]}"; do
     nm_path="${nm_dir}/${HOST_NAME}.json"
     mkdir -p "$nm_dir"
     sed "s|@HOST_BINARY@|${HOST_BIN}|g" \
-        packaging/firefox-mpris-host.json.in > "$nm_path"
+        packaging/mpris-hyprland-host.json.in > "$nm_path"
     chmod 0644 "$nm_path"
     echo "→ installed manifest [$name]: $nm_path"
     INSTALLED_TARGETS+=("$name")

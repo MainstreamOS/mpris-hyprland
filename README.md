@@ -1,4 +1,4 @@
-# firefox-mpris-hyprland
+# mpris-hyprland
 
 Per-window MPRIS bridge for Firefox — exposes Media Session metadata
 (title, artist, position, **YouTube thumbnails**, full duration) on D-Bus for
@@ -89,13 +89,13 @@ WebExtension native-messaging disabled by design (privacy hardening).
 ### Per-user (recommended for development)
 
 ```sh
-git clone https://github.com/MainstreamOS/firefox-mpris-hyprland
-cd firefox-mpris-hyprland
+git clone https://github.com/MainstreamOS/mpris-hyprland
+cd mpris-hyprland
 ./install.sh
 ```
 
 This builds the Rust host (`cargo build --release`), installs it to
-`~/.local/bin/firefox-mpris-host`, drops the native messaging manifest into
+`~/.local/bin/mpris-hyprland-host`, drops the native messaging manifest into
 `~/.mozilla/native-messaging-hosts/`, and prints next steps.
 
 Then load the extension into Firefox:
@@ -108,7 +108,7 @@ The extension will stay loaded until you restart Firefox. To make it
 permanent on stable Firefox you'll need to either self-distribute via
 [addons.mozilla.org self-distribution](https://extensionworkshop.com/documentation/publish/self-distribution/),
 or use Firefox Developer Edition / Nightly with `xpinstall.signatures.required = false`
-in `about:config` and drag-and-drop `build/firefox-mpris-hyprland.zip`
+in `about:config` and drag-and-drop `build/mpris-hyprland.zip`
 onto a Firefox window.
 
 ### Arch package (auto-installs the extension, no manual step)
@@ -119,9 +119,9 @@ makepkg -si
 
 Installs:
 
-- the host → `/usr/bin/firefox-mpris-host`
+- the host → `/usr/bin/mpris-hyprland-host`
 - the native-messaging manifest (system-wide) → `/usr/lib/mozilla/native-messaging-hosts/`
-- the extension as an `.xpi` → `/usr/share/firefox-mpris-hyprland/firefox-mpris-hyprland.xpi`
+- the extension as an `.xpi` → `/usr/share/mpris-hyprland/mpris-hyprland.xpi`
 - browser **policies** that force-install that `.xpi` → `/etc/zen/policies/policies.json`
   and `/etc/firefox/policies/policies.json`
 
@@ -129,7 +129,7 @@ Installs:
 Zen.** Despite Zen defaulting `xpinstall.signatures.required=false`, it still
 enforces signing for policy-installed extensions (an unsigned `.xpi` fails with
 `ERROR_SIGNEDSTATE_REQUIRED`). So the package ships the **AMO-signed** build
-(`dist/firefox-mpris-hyprland.xpi`, see [Signing](#signing-for-firefox-one-time-optional)),
+(`dist/mpris-hyprland.xpi`, see [Signing](#signing-for-firefox-one-time-optional)),
 which the `PKGBUILD` prefers; with it present, the extension auto-installs on
 next launch — no `about:debugging` step. Restart the browser and check
 `about:policies#active` / `about:addons`.
@@ -159,16 +159,16 @@ export AMO_JWT_SECRET='…'                 # the "JWT secret"
 
 # 2. Sign (uses web-ext via npx; no global install needed).
 ./scripts/sign.sh
-#    → produces dist/firefox-mpris-hyprland.xpi (a Mozilla-signed, self-hosted build)
+#    → produces dist/mpris-hyprland.xpi (a Mozilla-signed, self-hosted build)
 
-# 3. Commit it; the package ships dist/firefox-mpris-hyprland.xpi when present.
-git add dist/firefox-mpris-hyprland.xpi && git commit -m "release: signed xpi <version>"
+# 3. Commit it; the package ships dist/mpris-hyprland.xpi when present.
+git add dist/mpris-hyprland.xpi && git commit -m "release: signed xpi <version>"
 ```
 
 The credentials are yours and stay in your environment — never commit them.
 Bump `extension/manifest.json`'s `version` before each new signing run (AMO
 won't re-sign a version it's already seen). The `PKGBUILD` automatically prefers
-`dist/firefox-mpris-hyprland.xpi` over the unsigned zip when it exists.
+`dist/mpris-hyprland.xpi` over the unsigned zip when it exists.
 
 ### Uninstall
 
@@ -259,18 +259,18 @@ Two layers, one switch.
 
 ### 1. Rust host (file + stderr)
 
-Always writes to `${XDG_STATE_HOME:-~/.local/state}/firefox-mpris-host/host.log`
+Always writes to `${XDG_STATE_HOME:-~/.local/state}/mpris-hyprland-host/host.log`
 (size-capped at 10 MiB, rotated to `host.log.1`), and to stderr when the
 browser forwards it (run the browser from a terminal to see it inline).
 
-Default filter is `firefox_mpris_host=info,warn` — lifecycle, player
+Default filter is `mpris_hyprland_host=info,warn` — lifecycle, player
 create/remove, and D-Bus method calls. Routine per-message frames and the
 per-update changed-property set are at `debug`; position interpolation detail
 is at `trace`. Crank it via `RUST_LOG` before launching the browser:
 
 ```sh
-RUST_LOG=firefox_mpris_host=debug zen-browser   # + every frame & changed-prop set
-RUST_LOG=firefox_mpris_host=trace zen-browser   # + position/interpolation detail
+RUST_LOG=mpris_hyprland_host=debug zen-browser   # + every frame & changed-prop set
+RUST_LOG=mpris_hyprland_host=trace zen-browser   # + position/interpolation detail
 RUST_LOG=trace zen-browser                       # + zbus internals (very noisy)
 ```
 
@@ -306,7 +306,7 @@ firefox
 
 You should see lines like `[mpris-bg ...]` in the WebExtension's Inspect
 view at `about:debugging`, and timestamped log lines from
-`firefox-mpris-host` in the terminal. The host's stderr is forwarded to
+`mpris-hyprland-host` in the terminal. The host's stderr is forwarded to
 the browser's parent process — that's where you'll see what the host saw
 and did.
 

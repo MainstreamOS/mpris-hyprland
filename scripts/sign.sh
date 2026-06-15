@@ -13,9 +13,9 @@
 #       AMO_JWT_SECRET   the "JWT secret"
 #     These are yours — never commit them. Pass them in the environment only.
 #
-# Output: dist/firefox-mpris-hyprland.xpi
+# Output: dist/mpris-hyprland.xpi
 #   The PKGBUILD ships this signed .xpi when present (and falls back to an
-#   unsigned zip otherwise). After signing, commit dist/firefox-mpris-hyprland.xpi
+#   unsigned zip otherwise). After signing, commit dist/mpris-hyprland.xpi
 #   and bump extension/manifest.json's version before the next signing run
 #   (AMO refuses to re-sign an already-submitted version).
 
@@ -53,6 +53,6 @@ echo "Signing extension v${ver:-?} via AMO (unlisted / self-distributed)…"
 signed="$(ls -t "$ART"/*.xpi 2>/dev/null | head -1 || true)"
 [[ -n "$signed" ]] || { echo "error: AMO returned no signed .xpi" >&2; exit 1; }
 
-cp -f "$signed" "$ROOT/dist/firefox-mpris-hyprland.xpi"
-echo "Signed → dist/firefox-mpris-hyprland.xpi"
-echo "Next: git add dist/firefox-mpris-hyprland.xpi && commit + push, then rebuild the package."
+cp -f "$signed" "$ROOT/dist/mpris-hyprland.xpi"
+echo "Signed → dist/mpris-hyprland.xpi"
+echo "Next: git add dist/mpris-hyprland.xpi && commit + push, then rebuild the package."

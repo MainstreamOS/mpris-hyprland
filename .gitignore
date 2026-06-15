@@ -1,15 +1,15 @@
 /host/target
 *.xpi
 # …except the maintainer-signed release the package ships (scripts/sign.sh).
-!dist/firefox-mpris-hyprland.xpi
-firefox-mpris-host.json
+!dist/mpris-hyprland.xpi
+mpris-hyprland-host.json
 build/
 web-ext-artifacts/
 
 # makepkg in-tree build artifacts (when running makepkg from the repo root)
 pkg/
 src/
-/firefox-mpris-hyprland/
+/mpris-hyprland/
 *.pkg.tar.zst
 *.pkg.tar.zst.sig
 /metadata
@@ -24,4 +24,4 @@ chromium-signing-key.pem
 .crx-extid.txt
 *.crx
 # …except the maintainer-signed release the package ships (mirrors the .xpi).
-!dist/firefox-mpris-hyprland.crx
+!dist/mpris-hyprland.crx

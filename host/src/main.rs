@@ -1,6 +1,6 @@
-//! firefox-mpris-host
+//! mpris-hyprland-host
 //!
-//! Native messaging host for the firefox-mpris-hyprland WebExtension.
+//! Native messaging host for the mpris-hyprland WebExtension.
 //! Reads length-prefixed JSON on stdin (per Mozilla's native messaging
 //! protocol), forwards each frame's media state onto the session D-Bus as a
 //! distinct MPRIS player, and forwards method calls (Play/Pause/Next/Seek/
@@ -72,12 +72,12 @@ fn detected_browser() -> Option<&'static Browser> {
 }
 
 /// Detect the browser's .desktop basename so MPRIS clients resolve the correct
-/// icon. Order: $FIREFOX_MPRIS_DESKTOP_ENTRY override → parent process comm
+/// icon. Order: $MPRIS_HYPRLAND_DESKTOP_ENTRY override → parent process comm
 /// (the host is a child of the browser) → "firefox". On Zen the parent comm is
 /// "zen-bin" and the desktop file is zen.desktop, so plain "firefox" would
 /// leave clients with a generic icon.
 fn detect_desktop_entry() -> String {
-    if let Ok(v) = std::env::var("FIREFOX_MPRIS_DESKTOP_ENTRY") {
+    if let Ok(v) = std::env::var("MPRIS_HYPRLAND_DESKTOP_ENTRY") {
         if !v.is_empty() {
             return v;
         }
@@ -137,12 +137,12 @@ impl Write for TeeWriter {
 }
 
 /// Resolve the log file path, in order of preference:
-///   1. $FIREFOX_MPRIS_HOST_LOG (explicit override)
-///   2. $XDG_STATE_HOME/firefox-mpris-host/host.log
-///   3. $HOME/.local/state/firefox-mpris-host/host.log
-///   4. /tmp/firefox-mpris-host.log
+///   1. $MPRIS_HYPRLAND_HOST_LOG (explicit override)
+///   2. $XDG_STATE_HOME/mpris-hyprland-host/host.log
+///   3. $HOME/.local/state/mpris-hyprland-host/host.log
+///   4. /tmp/mpris-hyprland-host.log
 fn resolve_log_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("FIREFOX_MPRIS_HOST_LOG") {
+    if let Ok(p) = std::env::var("MPRIS_HYPRLAND_HOST_LOG") {
         if !p.is_empty() {
             return p.into();
         }
@@ -152,8 +152,8 @@ fn resolve_log_path() -> std::path::PathBuf {
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOME").ok().map(|h| format!("{h}/.local/state")));
     match state_home {
-        Some(home) => format!("{home}/firefox-mpris-host/host.log").into(),
-        None => "/tmp/firefox-mpris-host.log".into(),
+        Some(home) => format!("{home}/mpris-hyprland-host/host.log").into(),
+        None => "/tmp/mpris-hyprland-host.log".into(),
     }
 }
 
@@ -190,9 +190,9 @@ fn setup_logging() -> Result<std::path::PathBuf> {
 
     // Default to info: routine per-message frames are at debug/trace, so info
     // is a quiet-but-useful baseline (lifecycle, player create/remove, D-Bus
-    // method calls). Crank with RUST_LOG=firefox_mpris_host=trace.
+    // method calls). Crank with RUST_LOG=mpris_hyprland_host=trace.
     env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("firefox_mpris_host=info,warn"),
+        env_logger::Env::default().default_filter_or("mpris_hyprland_host=info,warn"),
     )
     .format_timestamp_millis()
     .target(env_logger::Target::Pipe(Box::new(tee)))
@@ -206,29 +206,29 @@ async fn main() -> Result<()> {
     // STDOUT is the native messaging channel and must remain pristine
     // length-prefixed JSON. We log via env_logger to a Tee that writes to
     // both stderr (in case the browser forwards it) and a persistent file at
-    // ~/.local/state/firefox-mpris-host/host.log (always works).
+    // ~/.local/state/mpris-hyprland-host/host.log (always works).
     //
     // Override the log filter via RUST_LOG, e.g.:
-    //   RUST_LOG=firefox_mpris_host=trace zen-browser
+    //   RUST_LOG=mpris_hyprland_host=trace zen-browser
     //   RUST_LOG=trace zen-browser   (everything, including zbus)
-    // Override the file path via FIREFOX_MPRIS_HOST_LOG.
+    // Override the file path via MPRIS_HYPRLAND_HOST_LOG.
     let log_path = setup_logging()?;
     let _ = DESKTOP_ENTRY.set(detect_desktop_entry());
 
     log::info!("================================================================");
     log::info!(
-        "firefox-mpris-host v{} starting (pid {})",
+        "mpris-hyprland-host v{} starting (pid {})",
         env!("CARGO_PKG_VERSION"),
         process::id()
     );
     log::info!("log file: {}", log_path.display());
     log::info!(
-        "desktop entry: {} (override with FIREFOX_MPRIS_DESKTOP_ENTRY)",
+        "desktop entry: {} (override with MPRIS_HYPRLAND_DESKTOP_ENTRY)",
         desktop_entry()
     );
     log::info!(
         "RUST_LOG: {}",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "(default = firefox_mpris_host=info,warn)".into())
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "(default = mpris_hyprland_host=info,warn)".into())
     );
     log::info!("================================================================");
 
@@ -305,7 +305,7 @@ async fn main() -> Result<()> {
     }
     drop(cmd_tx);
     let _ = writer_task.await;
-    log::info!("firefox-mpris-host exited cleanly");
+    log::info!("mpris-hyprland-host exited cleanly");
     Ok(())
 }
 

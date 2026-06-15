@@ -1,13 +1,13 @@
 [package]
-name = "firefox-mpris-host"
+name = "mpris-hyprland-host"
 version = "0.2.0"
 edition = "2021"
 description = "Native messaging host that bridges Firefox MediaSession API to MPRIS D-Bus"
 license = "MIT"
-repository = "https://github.com/MainstreamOS/firefox-mpris-hyprland"
+repository = "https://github.com/MainstreamOS/mpris-hyprland"
 
 [[bin]]
-name = "firefox-mpris-host"
+name = "mpris-hyprland-host"
 path = "src/main.rs"
 
 [dependencies]
