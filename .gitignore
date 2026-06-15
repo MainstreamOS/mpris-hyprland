@@ -1,5 +1,18 @@
 /host/target
 *.xpi
+# …except the maintainer-signed release the package ships (scripts/sign.sh).
+!dist/firefox-mpris-hyprland.xpi
 firefox-mpris-host.json
 build/
+web-ext-artifacts/
 
+# makepkg in-tree build artifacts (when running makepkg from the repo root)
+pkg/
+src/
+/firefox-mpris-hyprland/
+*.pkg.tar.zst
+*.pkg.tar.zst.sig
+/metadata
+
+# web-ext sign local state (AMO add-on UUID)
+extension/.amo-upload-uuid

@@ -1,0 +1,10 @@
+{
+  "policies": {
+    "ExtensionSettings": {
+      "firefox-mpris-hyprland@MainstreamOS": {
+        "installation_mode": "force_installed",
+        "install_url": "file:///usr/share/firefox-mpris-hyprland/firefox-mpris-hyprland.xpi"
+      }
+    }
+  }
+}

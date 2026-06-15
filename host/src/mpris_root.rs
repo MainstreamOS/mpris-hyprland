@@ -1,20 +1,42 @@
 //! `org.mpris.MediaPlayer2` — the root MPRIS interface.
 
+use crate::protocol::{Action, FrameId, OutMessage, TabId};
+use tokio::sync::mpsc;
 use zbus::interface;
 
 pub struct RootIface {
     pub identity: String,
+    /// Basename of the browser's .desktop file, so MPRIS clients resolve the
+    /// right app icon (e.g. "zen" on Zen, not "firefox").
+    pub desktop_entry: String,
+    pub cmd_tx: mpsc::UnboundedSender<OutMessage>,
+    pub tab_id: TabId,
+    pub frame_id: FrameId,
 }
 
 #[interface(name = "org.mpris.MediaPlayer2")]
 impl RootIface {
     // ---- methods ----
 
-    /// MPRIS spec: bring the player UI to the front. We can't reasonably
-    /// raise a specific tab from here without more wiring, so this is a no-op.
-    async fn raise(&self) {}
+    /// Bring the player to the front. The player *is* a browser tab, so we
+    /// relay this to the background script, which focuses the owning tab and
+    /// window (browser.tabs.update + windows.update).
+    async fn raise(&self) {
+        log::info!(
+            "[dbus→ext] tab={} frame={} action=Raise",
+            self.tab_id,
+            self.frame_id
+        );
+        let _ = self.cmd_tx.send(OutMessage::Command {
+            tab_id: self.tab_id,
+            frame_id: self.frame_id,
+            action: Action::Raise,
+            value: None,
+        });
+    }
 
-    /// MPRIS spec: quit the player. We don't quit Firefox.
+    /// Quit the player. A media bar must not be able to quit the browser, so
+    /// this stays a no-op (CanQuit is false).
     async fn quit(&self) {}
 
     // ---- properties ----
@@ -26,7 +48,7 @@ impl RootIface {
 
     #[zbus(property)]
     fn can_raise(&self) -> bool {
-        false
+        true
     }
 
     #[zbus(property)]
@@ -41,7 +63,7 @@ impl RootIface {
 
     #[zbus(property)]
     fn desktop_entry(&self) -> &str {
-        "firefox"
+        &self.desktop_entry
     }
 
     #[zbus(property)]

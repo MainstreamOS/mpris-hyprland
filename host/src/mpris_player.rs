@@ -1,7 +1,7 @@
 //! `org.mpris.MediaPlayer2.Player` — the playback interface.
 
-use crate::protocol::{Action, OutMessage, TabId};
-use crate::state::PlayerState;
+use crate::protocol::{Action, FrameId, OutMessage, TabId};
+use crate::state::{lock_state, PlayerState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
@@ -13,23 +13,49 @@ pub struct PlayerIface {
     pub state: Arc<Mutex<PlayerState>>,
     pub cmd_tx: mpsc::UnboundedSender<OutMessage>,
     pub tab_id: TabId,
+    pub frame_id: FrameId,
 }
 
 impl PlayerIface {
     fn send(&self, action: Action, value: Option<f64>) {
-        let _ = self.cmd_tx.send(OutMessage::Command {
+        log::info!(
+            "[dbus→ext] tab={} frame={} action={action:?} value={value:?}",
+            self.tab_id,
+            self.frame_id
+        );
+        if let Err(e) = self.cmd_tx.send(OutMessage::Command {
             tab_id: self.tab_id,
+            frame_id: self.frame_id,
             action,
             value,
-        });
+        }) {
+            log::warn!(
+                "[dbus→ext] tab={} frame={} action={action:?} channel send failed: {e}",
+                self.tab_id,
+                self.frame_id
+            );
+        }
+    }
+
+    /// True when there's something playable loaded — drives Can* and the
+    /// Paused-vs-Stopped distinction.
+    fn has_content(state: &PlayerState) -> bool {
+        !state.track.title.is_empty() || state.track.duration > 0.0
     }
 
     fn build_metadata(&self) -> HashMap<String, OwnedValue> {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         let mut m: HashMap<String, OwnedValue> = HashMap::new();
 
-        // mpris:trackid — required by spec, must be a unique object path.
-        let track_path = format!("/org/mpris/MediaPlayer2/firefox/track/{}", self.tab_id);
+        // mpris:trackid — required, unique object path. Includes the per-track
+        // counter so it changes on a genuine track change and clients reset
+        // Position. tab/frame use unsigned magnitude to stay path-valid.
+        let track_path = format!(
+            "/org/mpris/MediaPlayer2/firefox/t{}/f{}/{}",
+            self.tab_id.unsigned_abs(),
+            self.frame_id.unsigned_abs(),
+            state.track_counter
+        );
         if let Ok(op) = ObjectPath::try_from(track_path.as_str()) {
             if let Ok(ov) = OwnedValue::try_from(Value::from(op)) {
                 m.insert("mpris:trackid".into(), ov);
@@ -98,8 +124,17 @@ impl PlayerIface {
         self.send(Action::PlayPause, None);
     }
 
-    async fn stop(&self) {
+    /// Stop: mark the player Stopped locally (so PlaybackStatus flips to
+    /// Stopped immediately, not Paused, and Position reads 0) and tell the
+    /// page to halt + rewind.
+    async fn stop(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
+        lock_state(&self.state).mark_stopped();
         self.send(Action::Stop, None);
+        // Surface the status change now; the page's follow-up update would
+        // otherwise report Paused (metadata still present). CanPlay/CanPause
+        // derive from has_content, which Stop doesn't change, so they're not
+        // re-emitted here.
+        self.playback_status_changed(&emitter).await.ok();
     }
 
     async fn play(&self) {
@@ -113,47 +148,74 @@ impl PlayerIface {
     }
 
     /// SetPosition(track_id: o, position: x). We trust the position; the
-    /// track_id is checked loosely against our generated trackid.
+    /// track_id is accepted loosely.
     async fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
         let secs = position as f64 / 1_000_000.0;
         self.send(Action::SetPosition, Some(secs));
     }
 
-    /// OpenUri — not implemented (would require us to open a tab in Firefox).
+    /// OpenUri — not implemented (would require opening a tab in Firefox).
     async fn open_uri(&self, _uri: String) -> fdo::Result<()> {
-        Err(fdo::Error::NotSupported(
-            "OpenUri is not supported".into(),
-        ))
+        Err(fdo::Error::NotSupported("OpenUri is not supported".into()))
     }
 
     // ---------- properties ----------
 
     #[zbus(property)]
     fn playback_status(&self) -> String {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         if state.track.playing {
             "Playing".into()
-        } else if state.track.duration > 0.0 || !state.track.title.is_empty() {
-            "Paused".into()
-        } else {
+        } else if state.stopped || !Self::has_content(&state) {
             "Stopped".into()
+        } else {
+            "Paused".into()
         }
     }
 
     #[zbus(property)]
     fn loop_status(&self) -> String {
-        "None".into()
+        let state = lock_state(&self.state);
+        if state.track.looping {
+            "Track".into()
+        } else {
+            "None".into()
+        }
+    }
+
+    /// LoopStatus write: map None→off, Track/Playlist→on (a browser media
+    /// element only has a single-element `loop`, so both "on" values collapse
+    /// to element.loop = true).
+    #[zbus(property)]
+    fn set_loop_status(&self, value: String) {
+        let on = value != "None";
+        lock_state(&self.state).track.looping = on;
+        self.send(Action::SetLoop, Some(if on { 1.0 } else { 0.0 }));
     }
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        1.0
+        let state = lock_state(&self.state);
+        state.track.rate.clamp(0.25, 4.0)
+    }
+
+    #[zbus(property)]
+    fn set_rate(&self, value: f64) {
+        let v = value.clamp(0.25, 4.0);
+        lock_state(&self.state).track.rate = v;
+        self.send(Action::SetRate, Some(v));
     }
 
     #[zbus(property)]
     fn shuffle(&self) -> bool {
         false
     }
+
+    /// Shuffle write: accepted as a no-op. CanControl is true, so refusing the
+    /// set would surface a D-Bus error in clients; there's no per-tab shuffle
+    /// concept to honor, so we swallow it.
+    #[zbus(property)]
+    fn set_shuffle(&self, _value: bool) {}
 
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, OwnedValue> {
@@ -162,62 +224,62 @@ impl PlayerIface {
 
     #[zbus(property)]
     fn volume(&self) -> f64 {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         state.track.volume.clamp(0.0, 1.0)
     }
 
     #[zbus(property)]
     fn set_volume(&self, value: f64) {
         let v = value.clamp(0.0, 1.0);
-        // Update local state optimistically so a subsequent property read
-        // reflects the user's request before the page round-trips.
-        if let Ok(mut s) = self.state.lock() {
-            s.track.volume = v;
-        }
+        // Optimistic local update so a subsequent read reflects the request
+        // before the page round-trips.
+        lock_state(&self.state).track.volume = v;
         self.send(Action::SetVolume, Some(v));
     }
 
     #[zbus(property)]
     fn position(&self) -> i64 {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         state.current_position_us()
     }
 
     #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
-        1.0
+        0.25
     }
 
     #[zbus(property)]
     fn maximum_rate(&self) -> f64 {
-        1.0
+        4.0
     }
 
     #[zbus(property)]
     fn can_go_next(&self) -> bool {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         state.track.can_go_next
     }
 
     #[zbus(property)]
     fn can_go_previous(&self) -> bool {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         state.track.can_go_previous
     }
 
     #[zbus(property)]
     fn can_play(&self) -> bool {
-        true
+        let state = lock_state(&self.state);
+        Self::has_content(&state)
     }
 
     #[zbus(property)]
     fn can_pause(&self) -> bool {
-        true
+        let state = lock_state(&self.state);
+        Self::has_content(&state)
     }
 
     #[zbus(property)]
     fn can_seek(&self) -> bool {
-        let state = self.state.lock().expect("player state poisoned");
+        let state = lock_state(&self.state);
         state.track.can_seek
     }
 

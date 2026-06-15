@@ -1,6 +1,6 @@
 [package]
 name = "firefox-mpris-host"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Native messaging host that bridges Firefox MediaSession API to MPRIS D-Bus"
 license = "MIT"
@@ -11,7 +11,7 @@ name = "firefox-mpris-host"
 path = "src/main.rs"
 
 [dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "sync", "time"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 zvariant = "5"
 serde = { version = "1", features = ["derive"] }
