@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MPRIS for Hyprland",
   "short_name": "firefox-mpris-hyprland",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Per-tab MPRIS bridge for Firefox — exposes Media Session metadata, position, and artwork on D-Bus for waybar / quickshell / playerctl. Desktop-agnostic, lighter than plasma-browser-integration.",
   "author": "MainstreamOS",
   "browser_specific_settings": {
