@@ -1,18 +1,21 @@
 /*
- * MPRIS for Hyprland — content script (single layer).
+ * MPRIS for Hyprland — content script (isolated world).
  *
  * Runs at document_start in the isolated content-script world, in every frame.
  * Reads the page's Media Session and <video>/<audio> state and reports it to
  * the background script, which bridges it to the native host → D-Bus MPRIS.
  *
  * No <script> is injected into the page (the old inject.js approach broke on
- * strict-CSP sites like github.com / x.com that block moz-extension: in
- * script-src). Instead we reach the page realm through Firefox's Xray:
- *   - window.wrappedJSObject for navigator.mediaSession + MediaMetadata
- *   - exportFunction to wrap setActionHandler / metadata setter so the page
+ * strict-CSP sites like github.com / x.com that block the extension origin in
+ * script-src). Reaching the page realm is browser-specific:
+ *   - Firefox: Xray — window.wrappedJSObject for navigator.mediaSession, and
+ *     exportFunction to wrap setActionHandler / the metadata setter so the page
  *     can still call them while we observe.
- * <video>/<audio> elements and their live state are read directly from the
- * content-script DOM — no page realm needed for those.
+ *   - Chromium: a MAIN-world content script (content-main.js) does the same
+ *     patching in the page realm and relays the data here over postMessage,
+ *     since Chromium isolated worlds have no Xray.
+ * <video>/<audio> elements and their live state (including per-tab volume) are
+ * read directly from the content-script DOM on both — no page realm needed.
  *
  * Lightness: there is NO recurring metadata poll. A page with no media installs
  * zero timers (just a cheap MutationObserver). The single ~1s position ticker
@@ -27,6 +30,15 @@
   if (window.__mprisHooked) return;
   window.__mprisHooked = true;
 
+  // Cross-browser namespace: Firefox exposes `browser`, Chromium `chrome`.
+  const browser = globalThis.browser ?? chrome;
+  // Firefox reaches the page realm via Xray (wrappedJSObject / exportFunction).
+  // Chromium has no Xray; the MAIN-world helper (content-main.js) reads the
+  // page's Media Session and relays it here over postMessage. Everything else
+  // (media-element observation, position ticker, per-tab volume, commands)
+  // runs in this isolated world identically on both browsers.
+  const XRAY = typeof exportFunction === "function";
+
   // ---- DEBUG (unified across background + content via storage.local.debug) --
   let DEBUG = false;
   const tag = `[mpris-cs ${location.host || location.protocol}]`;
@@ -39,6 +51,7 @@
 
   // ---- page-realm access (Firefox Xray) -----------------------------------
   function pageMediaSession() {
+    if (!XRAY) return null; // Chromium: data arrives via the postMessage bridge
     try { return window.wrappedJSObject.navigator.mediaSession; } catch (_) { return null; }
   }
 
@@ -50,11 +63,16 @@
    *  Used for sites that drive playback without a DOM media element. */
   let positionState = null; // { duration, position, rate }
 
+  // Chromium bridge mode: latest Media Session snapshot from content-main.js
+  // (the MAIN-world helper). Null until the first state message arrives.
+  let bridgedMeta = null;   // { title, artist, album, artwork, playbackState }
+
   // Patch setActionHandler, the metadata setter, and setPositionState through
   // the Xray. Each is best-effort and independent — a failure on a hardened
   // page just means we fall back to media-element observation. None of these
-  // install a timer; they are passive interceptors.
-  (function patchMediaSession() {
+  // install a timer; they are passive interceptors. Firefox only — on Chromium
+  // content-main.js does the equivalent patching in the page realm.
+  if (XRAY) (function patchMediaSession() {
     const ms = pageMediaSession();
     if (!ms) { dbg("no navigator.mediaSession to patch"); return; }
     const win = window.wrappedJSObject;
@@ -123,7 +141,27 @@
     } catch (_) {}
   })();
 
+  // Chromium bridge: receive Media Session state from the MAIN-world helper and
+  // mirror it into the same vars the Xray path fills (bridgedMeta / handlers /
+  // positionState), then re-report. handlers hold `true` flags here (presence
+  // only — the actual page-realm callables live in content-main.js).
+  if (!XRAY) {
+    window.addEventListener("message", (ev) => {
+      if (ev.source !== window) return;
+      const d = ev.data;
+      if (!d || d.source !== "mpris-main" || d.type !== "state") return;
+      bridgedMeta = d.meta || null;
+      positionState = d.positionState || null;
+      for (const k of Object.keys(handlers)) delete handlers[k];
+      if (d.handlers) for (const k in d.handlers) if (d.handlers[k]) handlers[k] = true;
+      scheduleNotify();
+    });
+    // Ask the MAIN helper to push current state (covers injection-order races).
+    try { window.postMessage({ source: "mpris-iso", type: "request-state" }, "*"); } catch (_) {}
+  }
+
   function readMetadata() {
+    if (!XRAY) return bridgedMeta; // Chromium: supplied by content-main.js
     try {
       const ms = pageMediaSession();
       const md = ms && ms.metadata;
@@ -423,19 +461,27 @@
   }
 
   // ---- commands from the host (via background) ------------------------------
+  // Post a command to the MAIN-world helper (Chromium), which holds the actual
+  // page-realm Media Session handlers and invokes them.
+  function postToMain(msg) {
+    try { window.postMessage({ source: "mpris-iso", ...msg }, "*"); } catch (_) {}
+  }
+
   function callHandler(name) {
     const h = handlers[name];
     if (!h) return false;
+    if (!XRAY) { postToMain({ type: "invoke", name }); return true; }
     try { h(); return true; } catch (e) { warn(`handler ${name} threw:`, e); return false; }
   }
 
   // Invoke a MediaSession seek handler with its detail object, used when there
-  // is no DOM media element to scrub. The detail must be cloned into the page
-  // compartment to cross the Xray. Best-effort: a failure just means
-  // element-less seeking isn't available on that site.
+  // is no DOM media element to scrub. On Firefox the detail must be cloned into
+  // the page compartment to cross the Xray; on Chromium content-main.js (which
+  // lives in the page realm) invokes it. Best-effort either way.
   function callSeekHandler(name, detail) {
     const h = handlers[name];
     if (!h) return false;
+    if (!XRAY) { postToMain({ type: "invoke-seek", name, detail }); return true; }
     try {
       const arg = (typeof cloneInto === "function") ? cloneInto(detail, window) : detail;
       h(arg);

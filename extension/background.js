@@ -1,5 +1,6 @@
 /*
- * MPRIS for Hyprland — background script (MV3 event page).
+ * MPRIS for Hyprland — background script (MV3 event page on Firefox, service
+ * worker on Chromium — same code via the browser/chrome shim below).
  *
  * Holds one native-messaging port to the host. Consolidates every media
  * frame's state into ONE MPRIS player per browser WINDOW (keyed by windowId),
@@ -14,6 +15,13 @@
  */
 
 "use strict";
+
+// Cross-browser namespace: Firefox exposes `browser` (event page), Chromium
+// `chrome` (service worker). The promise-based runtime / tabs / windows /
+// storage calls used below work on both under MV3; connectNative keeps the
+// service worker alive while the port is open (and the reconnect + resync
+// backstop covers the harsher Chromium SW idle teardown).
+const browser = globalThis.browser ?? chrome;
 
 const HOST_NAME = "io.github.mainstreamos.firefox_mpris_hyprland";
 const VERSION = "0.2.0";

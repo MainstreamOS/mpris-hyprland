@@ -26,7 +26,6 @@ use tokio::sync::{mpsc, Mutex as AsyncMutex};
 /// Browser .desktop basename, detected once at startup (see detect_desktop_entry).
 static DESKTOP_ENTRY: OnceLock<String> = OnceLock::new();
 
-const APP_IDENTITY: &str = "Firefox";
 const PLAYER_OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
 
 /// Detect the browser's .desktop basename so MPRIS clients resolve the correct
@@ -41,12 +40,22 @@ fn detect_desktop_entry() -> String {
         }
     }
     let parent_comm = parent_comm().unwrap_or_default().to_ascii_lowercase();
+    // Most-specific needles first. "chromium" before "chrome" (so the chromium
+    // comm doesn't fall through), and "google-chrome" before "chrome".
     for (needle, entry) in [
         ("zen", "zen"),
         ("librewolf", "librewolf"),
         ("floorp", "floorp"),
         ("waterfox", "waterfox"),
         ("mullvad", "mullvad-browser"),
+        ("chromium", "chromium"),
+        ("brave", "brave-browser"),
+        ("vivaldi", "vivaldi-stable"),
+        ("microsoft-edge", "microsoft-edge"),
+        ("msedge", "microsoft-edge"),
+        ("google-chrome", "google-chrome"),
+        ("chrome", "google-chrome"),
+        ("opera", "opera"),
         ("firefox", "firefox"),
     ] {
         if parent_comm.contains(needle) {
@@ -54,6 +63,38 @@ fn detect_desktop_entry() -> String {
         }
     }
     "firefox".to_string()
+}
+
+/// MPRIS bus-name segment for the detected browser family. Firefox-family
+/// browsers (incl. Zen/LibreWolf) publish under
+/// org.mpris.MediaPlayer2.firefox.instance<pid>_t<window> so status bars that
+/// special-case the per-window bridge keep matching; Chromium-family browsers
+/// publish under ...chromium... so the bridge is distinct from — and dedups
+/// against — Chromium's own native single MPRIS player.
+fn bus_segment(desktop_entry: &str) -> &'static str {
+    match desktop_entry {
+        "chromium" | "google-chrome" | "brave-browser" | "vivaldi-stable"
+        | "microsoft-edge" | "opera" => "chromium",
+        _ => "firefox",
+    }
+}
+
+/// Human-readable MPRIS Identity base for the detected browser family.
+fn app_identity() -> &'static str {
+    match DESKTOP_ENTRY.get().map(String::as_str).unwrap_or("firefox") {
+        "chromium" => "Chromium",
+        "google-chrome" => "Google Chrome",
+        "brave-browser" => "Brave",
+        "vivaldi-stable" => "Vivaldi",
+        "microsoft-edge" => "Microsoft Edge",
+        "opera" => "Opera",
+        "zen" => "Zen",
+        "librewolf" => "LibreWolf",
+        "floorp" => "Floorp",
+        "waterfox" => "Waterfox",
+        "mullvad-browser" => "Mullvad Browser",
+        _ => "Firefox",
+    }
 }
 
 /// Read the parent process's `comm` (its short name) via /proc.
@@ -341,8 +382,13 @@ async fn create_player(
     // append _f<frame> so an embedded player gets its own bus name instead of
     // clobbering the top document's. unsigned_abs keeps the name valid for the
     // (shouldn't-happen) negative id case.
+    let segment = DESKTOP_ENTRY
+        .get()
+        .map(|e| bus_segment(e))
+        .unwrap_or("firefox");
     let mut bus_name = format!(
-        "org.mpris.MediaPlayer2.firefox.instance{}_t{}",
+        "org.mpris.MediaPlayer2.{}.instance{}_t{}",
+        segment,
         process::id(),
         key.tab_id.unsigned_abs()
     );
@@ -479,11 +525,12 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
 
 fn make_identity(track: &TrackInfo) -> String {
     // Try to pick a hostname from the page URL so users can tell Spotify-web
-    // from YouTube etc. Falls back to "Firefox".
+    // from YouTube etc. Falls back to the detected browser's display name.
+    let app = app_identity();
     if let Some(host) = url_host(&track.page_url) {
-        format!("{APP_IDENTITY} ({host})")
+        format!("{app} ({host})")
     } else {
-        APP_IDENTITY.to_string()
+        app.to_string()
     }
 }
 
