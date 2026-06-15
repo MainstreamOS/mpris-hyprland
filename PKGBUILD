@@ -1,7 +1,7 @@
 # Maintainer: blackdroid <blackdriod@gmail.com>
 pkgname=firefox-mpris-hyprland
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Per-tab MPRIS bridge for Firefox/Zen — Media Session metadata, position, artwork on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MainstreamOS/firefox-mpris-hyprland"
