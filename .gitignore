@@ -16,3 +16,12 @@ src/
 
 # web-ext sign local state (AMO add-on UUID)
 extension/.amo-upload-uuid
+
+# Chromium CRX signing — the private key NEVER ships (its public half is baked
+# into manifest.chromium.json "key"; losing this key changes the extension ID).
+chromium-signing-key.pem
+.crx-pubkey.txt
+.crx-extid.txt
+*.crx
+# …except the maintainer-signed release the package ships (mirrors the .xpi).
+!dist/firefox-mpris-hyprland.crx

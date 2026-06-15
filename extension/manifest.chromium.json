@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "MPRIS for Hyprland",
+  "short_name": "firefox-mpris-hyprland",
+  "version": "0.2.0",
+  "description": "Per-window MPRIS bridge for Chromium — exposes Media Session metadata, position, artwork, and per-tab volume on D-Bus for waybar / quickshell / playerctl. Desktop-agnostic, lighter than plasma-browser-integration.",
+  "author": "MainstreamOS",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwte/WrzW1565GmiSj53QGIZnm6Wr1vcZnpAdD7br1uv8o5xwqyFoL+/cCJTYxYicgEmEfnlOY4A8sEW0k7Zz9GXrE8C8JDv05tK4Q6swT1RCoXztlq3S2hmNVYYV3sDg2KZUoVa3j+NwIQauApzmOpn8hb9QTQmC/1Kb21m3CJudQrQGyn9Wv2eRIy6JRuBOTDVbOvvN6Pi+QlvedlKFF9rqVurDqA+jDBJQICvlEb8TF6kTaKtQUa2kJaTrxC377gjzxAseHZ/nv4rkl8+mUiyNAmmHkefdf2P6l7GFY0ZGcrLTctyotNgKuwI6xpQONYuK6ymiXI0QBtPhoCQ4hwIDAQAB",
+  "permissions": [
+    "tabs",
+    "nativeMessaging",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content-main.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN",
+      "match_about_blank": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": false
+    }
+  ],
+  "icons": {
+    "48": "icons/icon-48.png",
+    "96": "icons/icon-96.png"
+  }
+}

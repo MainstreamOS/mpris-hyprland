@@ -1,8 +1,8 @@
 # Maintainer: blackdroid <blackdriod@gmail.com>
 pkgname=firefox-mpris-hyprland
 pkgver=0.2.0
-pkgrel=2
-pkgdesc="Per-tab MPRIS bridge for Firefox/Zen — Media Session metadata, position, artwork on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
+pkgrel=3
+pkgdesc="Per-window MPRIS bridge for Firefox/Zen and Chromium — Media Session metadata, position, artwork, per-tab volume on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/MainstreamOS/firefox-mpris-hyprland"
 license=('MIT')
@@ -10,6 +10,7 @@ depends=('dbus')
 optdepends=(
     'firefox: the browser this bridges (or any Firefox fork)'
     'zen-browser-bin: Firefox fork, default on Mainstream OS'
+    'chromium: Chromium-family browser this also bridges (default on Mainstream OS)'
     'playerctl: control playback from CLI'
     'quickshell: Hyprland status bar with MPRIS support'
     'waybar: status bar with MPRIS module'
@@ -67,6 +68,20 @@ package() {
         "$pkgdir/etc/zen/policies/policies.json"
     install -Dm0644 packaging/policies/firefox.json \
         "$pkgdir/etc/firefox/policies/policies.json"
+
+    local crx_id="ckiplbjpfoaeijjpijkpmhcmdfolhonm"
+    if [[ -f dist/firefox-mpris-hyprland.crx ]]; then
+        install -Dm0644 dist/firefox-mpris-hyprland.crx \
+            "$pkgdir/usr/share/chromium/extensions/${crx_id}.crx"
+        printf '{\n  "external_crx": "/usr/share/chromium/extensions/%s.crx",\n  "external_version": "%s"\n}\n' \
+            "$crx_id" "$pkgver" \
+            | install -Dm0644 /dev/stdin \
+                "$pkgdir/usr/share/chromium/extensions/${crx_id}.json"
+        sed 's|@HOST_BINARY@|/usr/bin/firefox-mpris-host|g' \
+            packaging/chromium-mpris-host.json.in \
+            | install -Dm0644 /dev/stdin \
+                "$pkgdir/etc/chromium/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
+    fi
 
     install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
     install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

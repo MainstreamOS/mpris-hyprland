@@ -1,0 +1,7 @@
+{
+  "name": "io.github.mainstreamos.firefox_mpris_hyprland",
+  "description": "MPRIS for Hyprland — native messaging host bridging Chromium MediaSession to D-Bus",
+  "path": "@HOST_BINARY@",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://ckiplbjpfoaeijjpijkpmhcmdfolhonm/"]
+}
