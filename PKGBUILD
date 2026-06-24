@@ -4,6 +4,7 @@ pkgver=0.2.1
 pkgrel=1
 pkgdesc="Per-window MPRIS bridge for Firefox/Zen and Chromium — Media Session metadata, position, artwork, per-tab volume on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
 arch=('x86_64' 'aarch64')
+options=('!debug')
 url="https://github.com/MainstreamOS/mpris-hyprland"
 license=('MIT')
 replaces=('firefox-mpris-hyprland')
