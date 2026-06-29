@@ -67,6 +67,12 @@ pub struct TrackInfo {
     pub can_go_previous: bool,
 }
 
+impl TrackInfo {
+    pub fn has_content(&self) -> bool {
+        !self.title.is_empty() || self.duration > 0.0
+    }
+}
+
 fn default_volume() -> f64 {
     1.0
 }
