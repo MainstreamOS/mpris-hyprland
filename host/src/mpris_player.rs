@@ -29,7 +29,7 @@ impl PlayerIface {
     /// True when there's something playable loaded — drives Can* and the
     /// Paused-vs-Stopped distinction.
     fn has_content(state: &PlayerState) -> bool {
-        !state.track.title.is_empty() || state.track.duration > 0.0
+        state.track.has_content()
     }
 
     fn build_metadata(&self) -> HashMap<String, OwnedValue> {
@@ -51,42 +51,36 @@ impl PlayerIface {
             }
         }
 
+        let mut put = |k: &str, v: Value| {
+            if let Ok(ov) = OwnedValue::try_from(v) {
+                m.insert(k.into(), ov);
+            }
+        };
+
         if state.track.duration > 0.0 {
             let length_us = (state.track.duration * 1_000_000.0) as i64;
-            if let Ok(ov) = OwnedValue::try_from(Value::from(length_us)) {
-                m.insert("mpris:length".into(), ov);
-            }
+            put("mpris:length", Value::from(length_us));
         }
 
         if !state.track.art_url.is_empty() {
-            if let Ok(ov) = OwnedValue::try_from(Value::from(state.track.art_url.as_str())) {
-                m.insert("mpris:artUrl".into(), ov);
-            }
+            put("mpris:artUrl", Value::from(state.track.art_url.as_str()));
         }
 
         if !state.track.title.is_empty() {
-            if let Ok(ov) = OwnedValue::try_from(Value::from(state.track.title.as_str())) {
-                m.insert("xesam:title".into(), ov);
-            }
+            put("xesam:title", Value::from(state.track.title.as_str()));
         }
 
         if !state.track.artist.is_empty() {
             let artists: Vec<&str> = vec![state.track.artist.as_str()];
-            if let Ok(ov) = OwnedValue::try_from(Value::from(artists)) {
-                m.insert("xesam:artist".into(), ov);
-            }
+            put("xesam:artist", Value::from(artists));
         }
 
         if !state.track.album.is_empty() {
-            if let Ok(ov) = OwnedValue::try_from(Value::from(state.track.album.as_str())) {
-                m.insert("xesam:album".into(), ov);
-            }
+            put("xesam:album", Value::from(state.track.album.as_str()));
         }
 
         if !state.track.page_url.is_empty() {
-            if let Ok(ov) = OwnedValue::try_from(Value::from(state.track.page_url.as_str())) {
-                m.insert("xesam:url".into(), ov);
-            }
+            put("xesam:url", Value::from(state.track.page_url.as_str()));
         }
 
         m

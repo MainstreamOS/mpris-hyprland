@@ -93,13 +93,7 @@ impl PlayerState {
         // prediction must scale by playback rate to match current_position_us,
         // or fast/slow playback drifts past the threshold and fires spurious
         // Seeked signals.
-        let predicted_us = if self.track.playing {
-            let elapsed_us = now.duration_since(self.last_position_at).as_micros() as i64;
-            let scaled = (elapsed_us as f64 * self.track.rate.max(0.0)) as i64;
-            self.last_position_us + scaled
-        } else {
-            self.last_position_us
-        };
+        let predicted_us = self.predicted_position_us(now);
         let drift_us = (new_pos_us - predicted_us).abs();
         let position = if new_track.seeked || drift_us > SEEK_DRIFT_THRESHOLD_US {
             PositionDelta::Seeked(new_pos_us.max(0))
@@ -124,8 +118,8 @@ impl PlayerState {
 
         // CanPlay/CanPause derive from "is there content" (title or duration),
         // not from the playing flag — emit them only when that crosses.
-        let old_has_content = !self.track.title.is_empty() || self.track.duration > 0.0;
-        let new_has_content = !new_track.title.is_empty() || new_track.duration > 0.0;
+        let old_has_content = self.track.has_content();
+        let new_has_content = new_track.has_content();
 
         // Diff every field that maps to a PropertiesChanged member.
         let changed = Changed {
@@ -158,20 +152,24 @@ impl PlayerState {
         self.last_position_at = Instant::now();
     }
 
-    /// Compute the current playback position in microseconds, interpolating
-    /// against wall clock (scaled by playback rate) if the player is playing.
-    /// Never negative.
-    pub fn current_position_us(&self) -> i64 {
-        let pos = if self.track.playing {
-            let elapsed_us = Instant::now()
-                .duration_since(self.last_position_at)
-                .as_micros() as i64;
+    /// Predicted position in microseconds at `now`, interpolating against the
+    /// wall clock (scaled by playback rate) while playing. Unclamped: callers
+    /// apply their own bounds.
+    fn predicted_position_us(&self, now: Instant) -> i64 {
+        if self.track.playing {
+            let elapsed_us = now.duration_since(self.last_position_at).as_micros() as i64;
             let scaled = (elapsed_us as f64 * self.track.rate.max(0.0)) as i64;
             self.last_position_us + scaled
         } else {
             self.last_position_us
-        };
-        let pos = pos.max(0);
+        }
+    }
+
+    /// Compute the current playback position in microseconds, interpolating
+    /// against wall clock (scaled by playback rate) if the player is playing.
+    /// Never negative.
+    pub fn current_position_us(&self) -> i64 {
+        let pos = self.predicted_position_us(Instant::now()).max(0);
         if self.track.duration > 0.0 {
             let max = (self.track.duration * 1_000_000.0) as i64;
             pos.min(max)
