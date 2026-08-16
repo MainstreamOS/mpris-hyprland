@@ -309,7 +309,11 @@
     const all = allMedia();
     if (!all.length) return null;
     const real = all.filter((m) => isFinite(m.duration) && m.duration >= MIN_TRACK_SECONDS);
-    const pool = real.length ? real : all;
+    let pool = real.length ? real : all;
+    // An audible element outranks any muted one, playing or not: a muted
+    // autoplay loop must not speak for a page that also holds real playback.
+    const audible = pool.filter((m) => !m.muted && m.volume > 0);
+    if (audible.length) pool = audible;
     const playing = pool.find((m) => !m.paused && !m.ended && (m.currentTime > 0 || m.readyState >= 2));
     if (playing) return playing;
     const withSrc = pool.filter((m) => m.currentSrc || m.src);
@@ -388,6 +392,7 @@
       canGoPrevious: !!handlers.previoustrack,
       _hasMeta: hasMeta,
       _hasRealMedia: hasRealMedia,
+      _audible: !media || volume > 0,
     };
   }
 
@@ -397,7 +402,13 @@
     // just has a <title> is not a player. A paused element with finite
     // duration stays reported (the player persists across pause) — only true
     // media-gone removes it.
-    return t._hasMeta || t._hasRealMedia;
+    //
+    // A muted or zero-volume element without Media Session metadata is not a
+    // player either — decorative autoplay loops land here. The metadata path
+    // is deliberately not gated: SetVolume(0) mutes the element, and a real
+    // player the user silenced must keep its seat. volumechange re-evaluates
+    // this, so unmuting reports the page again.
+    return t._hasMeta || (t._hasRealMedia && t._audible);
   }
 
   // ---- reporting & dedupe ---------------------------------------------------
