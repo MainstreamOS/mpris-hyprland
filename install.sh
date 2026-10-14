@@ -49,14 +49,21 @@ fi
 KNOWN_BROWSERS=(
     "Firefox|.mozilla|firefox"
     "LibreWolf|.librewolf|librewolf"
-    "Zen|.zen|zen-browser"
+    "Zen|.config/zen|zen-browser"
     "Floorp|.floorp|floorp"
     "Waterfox|.waterfox|waterfox"
+    "Chromium|.config/chromium|chromium"
+    "Chrome|.config/google-chrome|google-chrome"
+    "Brave|.config/BraveSoftware/Brave-Browser|brave-browser"
+    "Vivaldi|.config/vivaldi|vivaldi-stable"
+    "Edge|.config/microsoft-edge|microsoft-edge"
+    "Opera|.config/opera|opera"
 )
 
 # ---------- options --------------------------------------------------------
 
 INSTALL_PREFIX="${HOME}/.local"
+MANIFEST_ROOT="${HOME}"
 HOST_NAME="io.github.mainstreamos.firefox_mpris_hyprland"
 SKIP_BUILD=0
 ZIP_ONLY=0
@@ -70,7 +77,8 @@ Usage: $0 [options]
 
 Options:
   --prefix DIR        Install binary under DIR/bin (default: \$HOME/.local)
-  --browsers LIST     Comma-separated list (Firefox,LibreWolf,Zen,Floorp,Waterfox).
+  --manifest-root DIR Home directory for native manifests (default: \$HOME)
+  --browsers LIST     Comma-separated list (Firefox,LibreWolf,Zen,Floorp,Waterfox,Chromium,Chrome,Brave,Vivaldi,Edge,Opera).
                       Default: auto-detect every fork that's installed.
   --all-browsers      Install the manifest for every supported fork, even
                       ones not currently detected. Cheap & idempotent.
@@ -84,13 +92,15 @@ Files installed:
   ~/.<browser>/native-messaging-hosts/${HOST_NAME}.json   (one per fork)
   ./build/mpris-hyprland.zip                      (load manually in browser)
 
-Supported browsers: Firefox, LibreWolf, Zen, Floorp, Waterfox
+Supported browsers: Firefox, LibreWolf, Zen, Floorp, Waterfox, Chromium, Chrome, Brave, Vivaldi, Edge, Opera
+Requires python3 for extension packaging and native manifests.
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix) INSTALL_PREFIX="$2"; shift 2 ;;
+        --manifest-root) MANIFEST_ROOT="$2"; shift 2 ;;
         --browsers) BROWSERS_OPT="$2"; shift 2 ;;
         --all-browsers) INSTALL_ALL=1; shift ;;
         --skip-build) SKIP_BUILD=1; shift ;;
@@ -103,6 +113,7 @@ done
 
 BIN_DIR="${INSTALL_PREFIX}/bin"
 HOST_BIN="${BIN_DIR}/mpris-hyprland-host"
+command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
 # ---------- pick which browsers to install for ----------------------------
 #
@@ -164,7 +175,9 @@ if [[ $UNINSTALL -eq 1 ]]; then
     # but messy.
     for entry in "${KNOWN_BROWSERS[@]}"; do
         IFS='|' read -r name reldir _bin <<< "$entry"
-        nm_path="${HOME}/${reldir}/native-messaging-hosts/${HOST_NAME}.json"
+        case "$name" in Chromium|Chrome|Brave|Vivaldi|Edge|Opera) nm_subdir=NativeMessagingHosts ;; *) nm_subdir=native-messaging-hosts ;; esac
+        [[ "$name" == "Zen" ]] && reldir=.mozilla
+        nm_path="${MANIFEST_ROOT}/${reldir}/${nm_subdir}/${HOST_NAME}.json"
         [[ -f "$nm_path" ]] && rm -fv "$nm_path"
     done
     echo
@@ -178,7 +191,7 @@ fi
 mkdir -p build
 EXT_ZIP="${PROJECT_ROOT}/build/mpris-hyprland.zip"
 rm -f "$EXT_ZIP"
-( cd extension && zip -qr "$EXT_ZIP" . -x '*.DS_Store' )
+python3 scripts/build-extension.py --browser firefox --output "$EXT_ZIP"
 echo "→ extension package: $EXT_ZIP"
 
 if [[ $ZIP_ONLY -eq 1 ]]; then
@@ -209,12 +222,30 @@ echo "→ installed host:   $HOST_BIN"
 INSTALLED_TARGETS=()
 for t in "${TARGETS[@]}"; do
     IFS='|' read -r name reldir <<< "$t"
-    nm_dir="${HOME}/${reldir}/native-messaging-hosts"
+    case "$name" in
+        Chromium|Chrome|Brave|Vivaldi|Edge|Opera) template=packaging/chromium-host.json.in; nm_subdir=NativeMessagingHosts ;;
+        *) template=packaging/firefox-host.json.in; nm_subdir=native-messaging-hosts ;;
+    esac
+    # Zen's profile lives in .config/zen, but its native-host lookup uses
+    # Mozilla's user manifest directory (also shared with Firefox).
+    [[ "$name" == "Zen" ]] && reldir=.mozilla
+    nm_dir="${MANIFEST_ROOT}/${reldir}/${nm_subdir}"
     nm_path="${nm_dir}/${HOST_NAME}.json"
     mkdir -p "$nm_dir"
-    sed "s|@HOST_BINARY@|${HOST_BIN}|g" \
-        packaging/mpris-hyprland-host.json.in > "$nm_path"
-    chmod 0644 "$nm_path"
+    temporary=$(mktemp "$nm_dir/.mpris-manifest-XXXXXX")
+    if ! python3 - "$template" "$HOST_BIN" > "$temporary" <<'MANIFEST'
+import json, os, sys
+with open(sys.argv[1]) as stream:
+    manifest = json.load(stream)
+manifest["path"] = os.path.abspath(sys.argv[2])
+print(json.dumps(manifest, indent=2))
+MANIFEST
+    then
+        rm -f "$temporary"
+        exit 1
+    fi
+    chmod 0644 "$temporary"
+    mv -f "$temporary" "$nm_path"
     echo "→ installed manifest [$name]: $nm_path"
     INSTALLED_TARGETS+=("$name")
 done
@@ -225,7 +256,11 @@ JOINED_TARGETS=$(IFS=", "; echo "${INSTALLED_TARGETS[*]}")
 
 cat <<EOF
 
-Done. Final step — load the WebExtension into each browser you want it in
+Done. For Chromium-family browsers, unpack the output from
+  python3 scripts/build-extension.py --browser chromium --output build/chromium.zip
+and load the folder through chrome://extensions → Developer mode → Load unpacked.
+
+For Firefox-family browsers, load the WebExtension into each browser you want it in
 (${JOINED_TARGETS}):
 
   1. Open about:debugging#/runtime/this-firefox  (or the equivalent in your

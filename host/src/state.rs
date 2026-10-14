@@ -106,6 +106,7 @@ impl PlayerState {
             || self.track.artist != new_track.artist
             || self.track.album != new_track.album
             || self.track.page_url != new_track.page_url
+            || self.track.source_id != new_track.source_id
             || (self.track.duration - new_track.duration).abs() > 0.5;
         if logical_track_changed {
             self.track_counter = self.track_counter.wrapping_add(1);
@@ -159,7 +160,7 @@ impl PlayerState {
         if self.track.playing {
             let elapsed_us = now.duration_since(self.last_position_at).as_micros() as i64;
             let scaled = (elapsed_us as f64 * self.track.rate.max(0.0)) as i64;
-            self.last_position_us + scaled
+            self.last_position_us.saturating_add(scaled)
         } else {
             self.last_position_us
         }
@@ -204,4 +205,58 @@ pub struct PlayerHandle {
 /// otherwise take down the host and every tab's MPRIS player at once.
 pub fn lock_state(state: &Mutex<PlayerState>) -> std::sync::MutexGuard<'_, PlayerState> {
     state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn track() -> TrackInfo {
+        TrackInfo {
+            title: "Track".into(),
+            duration: 120.0,
+            position: 20.0,
+            playing: true,
+            ..TrackInfo::default()
+        }
+    }
+    #[test]
+    fn continuous_playback_only_reanchors_position() {
+        let mut state = PlayerState::new(track());
+        state.last_position_at -= std::time::Duration::from_secs(2);
+        let outcome = state.apply_update(TrackInfo {
+            position: 22.0,
+            ..track()
+        });
+        assert!(!outcome.changed.any());
+        assert!(matches!(outcome.position, PositionDelta::Continuous));
+    }
+    #[test]
+    fn rate_scaled_prediction_does_not_emit_false_seek() {
+        let mut t = track();
+        t.rate = 2.0;
+        let mut state = PlayerState::new(t.clone());
+        state.last_position_at -= std::time::Duration::from_secs(2);
+        t.position = 24.0;
+        assert!(matches!(
+            state.apply_update(t).position,
+            PositionDelta::Continuous
+        ));
+    }
+    #[test]
+    fn buffering_update_freezes_position() {
+        let mut state = PlayerState::new(track());
+        let mut t = track();
+        t.playing = false;
+        assert!(state.apply_update(t).changed.playback_status);
+        state.last_position_at -= std::time::Duration::from_secs(30);
+        assert_eq!(state.current_position_us(), 20_000_000);
+    }
+    #[test]
+    fn switching_source_bumps_track_identifier() {
+        let mut state = PlayerState::new(track());
+        let mut t = track();
+        t.source_id = "different-frame".into();
+        assert!(state.apply_update(t).changed.metadata);
+        assert_eq!(state.track_counter, 1);
+    }
 }

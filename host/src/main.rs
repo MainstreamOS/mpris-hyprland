@@ -46,18 +46,78 @@ struct Browser {
 /// most-specific needles first ("chromium" before "chrome", "google-chrome"
 /// before "chrome") so a comm doesn't fall through to the wrong family.
 const BROWSERS: &[Browser] = &[
-    Browser { needles: &["zen"], entry: "zen", segment: "firefox", identity: "Zen" },
-    Browser { needles: &["librewolf"], entry: "librewolf", segment: "firefox", identity: "LibreWolf" },
-    Browser { needles: &["floorp"], entry: "floorp", segment: "firefox", identity: "Floorp" },
-    Browser { needles: &["waterfox"], entry: "waterfox", segment: "firefox", identity: "Waterfox" },
-    Browser { needles: &["mullvad"], entry: "mullvad-browser", segment: "firefox", identity: "Mullvad Browser" },
-    Browser { needles: &["chromium"], entry: "chromium", segment: "chromium", identity: "Chromium" },
-    Browser { needles: &["brave"], entry: "brave-browser", segment: "chromium", identity: "Brave" },
-    Browser { needles: &["vivaldi"], entry: "vivaldi-stable", segment: "chromium", identity: "Vivaldi" },
-    Browser { needles: &["microsoft-edge", "msedge"], entry: "microsoft-edge", segment: "chromium", identity: "Microsoft Edge" },
-    Browser { needles: &["google-chrome", "chrome"], entry: "google-chrome", segment: "chromium", identity: "Google Chrome" },
-    Browser { needles: &["opera"], entry: "opera", segment: "chromium", identity: "Opera" },
-    Browser { needles: &["firefox"], entry: "firefox", segment: "firefox", identity: "Firefox" },
+    Browser {
+        needles: &["zen"],
+        entry: "zen",
+        segment: "firefox",
+        identity: "Zen",
+    },
+    Browser {
+        needles: &["librewolf"],
+        entry: "librewolf",
+        segment: "firefox",
+        identity: "LibreWolf",
+    },
+    Browser {
+        needles: &["floorp"],
+        entry: "floorp",
+        segment: "firefox",
+        identity: "Floorp",
+    },
+    Browser {
+        needles: &["waterfox"],
+        entry: "waterfox",
+        segment: "firefox",
+        identity: "Waterfox",
+    },
+    Browser {
+        needles: &["mullvad"],
+        entry: "mullvad-browser",
+        segment: "firefox",
+        identity: "Mullvad Browser",
+    },
+    Browser {
+        needles: &["chromium"],
+        entry: "chromium",
+        segment: "chromium",
+        identity: "Chromium",
+    },
+    Browser {
+        needles: &["brave"],
+        entry: "brave-browser",
+        segment: "chromium",
+        identity: "Brave",
+    },
+    Browser {
+        needles: &["vivaldi"],
+        entry: "vivaldi-stable",
+        segment: "chromium",
+        identity: "Vivaldi",
+    },
+    Browser {
+        needles: &["microsoft-edge", "msedge"],
+        entry: "microsoft-edge",
+        segment: "chromium",
+        identity: "Microsoft Edge",
+    },
+    Browser {
+        needles: &["google-chrome", "chrome"],
+        entry: "google-chrome",
+        segment: "chromium",
+        identity: "Google Chrome",
+    },
+    Browser {
+        needles: &["opera"],
+        entry: "opera",
+        segment: "chromium",
+        identity: "Opera",
+    },
+    Browser {
+        needles: &["firefox"],
+        entry: "firefox",
+        segment: "firefox",
+        identity: "Firefox",
+    },
 ];
 
 /// The detected browser's `.desktop` basename, or "firefox" before init / when unknown.
@@ -144,11 +204,13 @@ async fn main() -> Result<()> {
     let mut stdin = tokio::io::stdin();
     loop {
         let payload = match messaging::read_message(&mut stdin).await {
-            Ok(Some(p)) => p,
+            Ok(Some(messaging::Message::Payload(p))) => p,
+            Ok(Some(messaging::Message::Skipped)) => continue,
             Ok(None) => {
                 break;
             }
-            Err(_) => {
+            Err(error) => {
+                eprintln!("mpris-hyprland: native framing error: {error:#}");
                 break;
             }
         };
@@ -160,7 +222,9 @@ async fn main() -> Result<()> {
             }
         };
 
-        let _ = handle_message(msg, &players, &cmd_tx).await;
+        if let Err(error) = handle_message(msg, &players, &cmd_tx).await {
+            eprintln!("mpris-hyprland: player update failed: {error:#}");
+        }
     }
 
     // Clean up: drop all player connections, then close the writer.
@@ -333,7 +397,9 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
 
     if let PositionDelta::Seeked(pos_us) = position {
         let emitter = iface_ref.signal_emitter().to_owned();
-        mpris_player::PlayerIface::seeked(&emitter, pos_us).await.ok();
+        mpris_player::PlayerIface::seeked(&emitter, pos_us)
+            .await
+            .ok();
     }
 
     Ok(())

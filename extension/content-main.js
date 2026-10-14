@@ -146,12 +146,13 @@
     if (ev.source !== window) return;
     const d = ev.data;
     if (!d || d.source !== "mpris-iso") return;
-    if (d.type === "invoke") {
+    if (d.type === "invoke" || d.type === "invoke-seek") {
       const h = handlers[d.name];
-      if (h) { try { h(); } catch (_) {} }
-    } else if (d.type === "invoke-seek") {
-      const h = handlers[d.name];
-      if (h) { try { h(d.detail || {}); } catch (_) {} }
+      const reply = handled => window.postMessage({ source: "mpris-main", type: "result", id: d.id, handled }, "*");
+      try {
+        if (!h) { reply(false); return; }
+        Promise.resolve(h({ ...(d.detail || {}), action: d.name })).then(() => reply(true), () => reply(false));
+      } catch (_) { reply(false); }
     } else if (d.type === "request-state") {
       postState();
     }

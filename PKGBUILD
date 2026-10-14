@@ -1,6 +1,6 @@
 # Maintainer: blackdroid <blackdriod@gmail.com>
 pkgname=mpris-hyprland
-pkgver=0.2.2
+pkgver=0.2.3
 pkgrel=1
 pkgdesc="Per-window MPRIS bridge for Firefox/Zen and Chromium — Media Session metadata, position, artwork, per-tab volume on D-Bus for Hyprland/Wayland status bars (lighter plasma-browser-integration alternative)"
 arch=('x86_64' 'aarch64')
@@ -10,7 +10,8 @@ license=('MIT')
 replaces=('firefox-mpris-hyprland')
 conflicts=('firefox-mpris-hyprland')
 provides=('firefox-mpris-hyprland')
-depends=('dbus')
+depends=('dbus' 'python')
+install=mpris-hyprland.install
 optdepends=(
     'firefox: the browser this bridges (or any Firefox fork)'
     'zen-browser-bin: Firefox fork, default on Mainstream OS'
@@ -20,9 +21,7 @@ optdepends=(
     'waybar: status bar with MPRIS module'
 )
 makedepends=('rust' 'cargo' 'zip' 'git')
-# Build from the published repo so the ISO build is reproducible. For local
-# iteration use ./install.sh instead of makepkg.
-source=("$pkgname::git+$url.git#branch=master")
+source=("$pkgname::git+${MPRIS_HYPRLAND_REPO_URL:-$url.git}#${MPRIS_HYPRLAND_REF:-tag=v$pkgver}")
 sha256sums=('SKIP')
 
 build() {
@@ -45,46 +44,36 @@ package() {
         | install -Dm0644 /dev/stdin \
             "$pkgdir/usr/lib/mozilla/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
 
-    # ── WebExtension .xpi ───────────────────────────────────────────────────
-    # Prefer a maintainer-signed build (dist/, produced by scripts/sign.sh via
-    # AMO) so the policy auto-installs it on vanilla Firefox too. Without it,
-    # ship an unsigned zip — which auto-installs only on Zen and other unbranded
-    # forks (Firefox rejects unsigned, even via policy).
+    local xpi_ver="" crx_ver="" crx_id="ckiplbjpfoaeijjpijkpmhcmdfolhonm"
     if [[ -f dist/mpris-hyprland.xpi ]]; then
-        install -Dm0644 dist/mpris-hyprland.xpi \
-            "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
+        xpi_ver=$(python3 -c 'import json,zipfile; print(json.loads(zipfile.ZipFile("dist/mpris-hyprland.xpi").read("manifest.json"))["version"])')
+    fi
+    if [[ "$xpi_ver" == "$pkgver" ]]; then
+        install -Dm0644 dist/mpris-hyprland.xpi "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
+    elif [[ "${MPRIS_HYPRLAND_TEST_BUILD:-0}" == 1 ]]; then
+        python3 scripts/build-extension.py --output "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
     else
-        ( cd extension && zip -qr "$srcdir/mpris-hyprland.xpi" . -x '*.DS_Store' )
-        install -Dm0644 "$srcdir/mpris-hyprland.xpi" \
-            "$pkgdir/usr/share/$pkgname/mpris-hyprland.xpi"
+        echo "Signed Firefox bundle does not match $pkgver; rebuild/sign the release, or set MPRIS_HYPRLAND_TEST_BUILD=1 for a local unsigned test." >&2
+        return 1
     fi
 
-    # ── browser policies to auto-install the extension (unsigned) ───────────
-    # Enterprise policy force-installs the .xpi from the local path above. Zen
-    # ships xpinstall.signatures.required=false, so the unsigned .xpi installs
-    # fine; the Zen policy replicates Zen's own baseline (DisableAppUpdate,
-    # DefaultSerialGuardSetting) because the /etc policy overrides the browser's
-    # distribution policy on Linux. Vanilla Mozilla Firefox enforces signing and
-    # will reject the unsigned .xpi — there it needs an AMO-signed build (the
-    # policy is shipped anyway so it works the moment a signed .xpi exists, or on
-    # an unbranded/ESR Firefox with signatures disabled).
-    install -Dm0644 packaging/policies/zen.json \
-        "$pkgdir/etc/zen/policies/policies.json"
-    install -Dm0644 packaging/policies/firefox.json \
-        "$pkgdir/etc/firefox/policies/policies.json"
+    install -Dm0755 packaging/manage-policies.py "$pkgdir/usr/lib/$pkgname/manage-policies.py"
+    install -Dm0644 -t "$pkgdir/usr/lib/$pkgname/policies" packaging/policies/firefox.json packaging/policies/zen.json
 
-    local crx_id="ckiplbjpfoaeijjpijkpmhcmdfolhonm"
+    for directory in /etc/chromium/native-messaging-hosts /etc/opt/chrome/native-messaging-hosts /etc/opt/edge/native-messaging-hosts; do
+        sed 's|@HOST_BINARY@|/usr/bin/mpris-hyprland-host|g' packaging/chromium-host.json.in \
+            | install -Dm0644 /dev/stdin "$pkgdir$directory/io.github.mainstreamos.firefox_mpris_hyprland.json"
+    done
     if [[ -f dist/mpris-hyprland.crx ]]; then
-        install -Dm0644 dist/mpris-hyprland.crx \
-            "$pkgdir/usr/share/chromium/extensions/${crx_id}.crx"
-        printf '{\n  "external_crx": "/usr/share/chromium/extensions/%s.crx",\n  "external_version": "%s"\n}\n' \
-            "$crx_id" "$pkgver" \
-            | install -Dm0644 /dev/stdin \
-                "$pkgdir/usr/share/chromium/extensions/${crx_id}.json"
-        sed 's|@HOST_BINARY@|/usr/bin/mpris-hyprland-host|g' \
-            packaging/chromium-host.json.in \
-            | install -Dm0644 /dev/stdin \
-                "$pkgdir/etc/chromium/native-messaging-hosts/io.github.mainstreamos.firefox_mpris_hyprland.json"
+        crx_ver=$(python3 -c 'import json,zipfile; print(json.loads(zipfile.ZipFile("dist/mpris-hyprland.crx").read("manifest.json"))["version"])')
+    fi
+    if [[ "$crx_ver" == "$pkgver" ]]; then
+        install -Dm0644 dist/mpris-hyprland.crx "$pkgdir/usr/share/chromium/extensions/${crx_id}.crx"
+        printf '{"external_crx":"/usr/share/chromium/extensions/%s.crx","external_version":"%s"}\n' "$crx_id" "$crx_ver" \
+            | install -Dm0644 /dev/stdin "$pkgdir/usr/share/chromium/extensions/${crx_id}.json"
+    elif [[ "${MPRIS_HYPRLAND_TEST_BUILD:-0}" != 1 ]]; then
+        echo "Signed Chromium bundle does not match $pkgver; rebuild the release CRX." >&2
+        return 1
     fi
 
     install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"

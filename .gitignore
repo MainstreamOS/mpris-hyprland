@@ -25,3 +25,6 @@ chromium-signing-key.pem
 *.crx
 # …except the maintainer-signed release the package ships (mirrors the .xpi).
 !dist/mpris-hyprland.crx
+
+# Python regression/packaging helpers
+__pycache__/

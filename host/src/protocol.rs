@@ -33,6 +33,8 @@ pub struct TrackInfo {
     /// Page URL the media is playing on.
     #[serde(default)]
     pub page_url: String,
+    #[serde(default)]
+    pub source_id: String,
     /// Duration in seconds (browser native unit). 0 / negative means unknown.
     #[serde(default)]
     pub duration: f64,
@@ -91,6 +93,7 @@ impl Default for TrackInfo {
             album: String::new(),
             art_url: String::new(),
             page_url: String::new(),
+            source_id: String::new(),
             duration: 0.0,
             position: 0.0,
             playing: false,
@@ -107,7 +110,11 @@ impl Default for TrackInfo {
 
 /// Message FROM the extension TO this host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum InMessage {
     /// Initial handshake from the extension's background script. Optional.
     Hello {
@@ -138,7 +145,11 @@ pub enum InMessage {
 /// (media keys, seek/raise/loop requests from waybar/quickshell) back to the
 /// page or — for `Raise` — to the background script.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum OutMessage {
     Command {
         tab_id: TabId,

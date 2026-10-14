@@ -24,11 +24,12 @@
 const browser = globalThis.browser ?? chrome;
 
 const HOST_NAME = "io.github.mainstreamos.firefox_mpris_hyprland";
-const VERSION = "0.2.0";
+const VERSION = browser.runtime.getManifest().version;
 
 /** @type {browser.runtime.Port | null} */
 let hostPort = null;
 let reconnectDelayMs = 500;
+let reconnectTimer = null;
 
 // Per-WINDOW players. Each browser window gets exactly one MPRIS player,
 // reflecting that window's active media: the playing frame, else the most
@@ -43,6 +44,25 @@ let reconnectDelayMs = 500;
 const frames = new Map();        // "tabId:frameId" -> {tabId, frameId, windowId, track, seq}
 const windowState = new Map();   // windowId -> {repKey, sig, tabId, frameId}  (last sent)
 let seqCounter = 0;
+const detachedTabs = new Set();
+const cleanString = (value, limit = 4096) => typeof value === "string" ? value.slice(0, limit) : "";
+const boundedNumber = (value, fallback, min, max) => typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+
+// Validate at the native-host boundary even if a page bypasses the content
+// script's artwork guard. The complete normalized payload stays below 1 MiB.
+function normalizeTrack(t) {
+  if (!t || typeof t !== "object") return null;
+  let artUrl = cleanString(t.artUrl, 256 * 1024 + 1);
+  if (!/^(https?:|data:image\/)/i.test(artUrl) || artUrl.length > (/^data:/i.test(artUrl) ? 256 * 1024 : 8192)) artUrl = "";
+  return {
+    title: cleanString(t.title), artist: cleanString(t.artist), album: cleanString(t.album),
+    pageUrl: cleanString(t.pageUrl, 8192), sourceId: cleanString(t.sourceId, 8192), artUrl,
+    duration: boundedNumber(t.duration, 0, 0, 1e10), position: boundedNumber(t.position, 0, 0, 1e10),
+    volume: boundedNumber(t.volume, 1, 0, 1), rate: boundedNumber(t.rate, 1, 0.25, 4),
+    playing: t.playing === true, seeked: t.seeked === true, looping: t.looping === true,
+    canSeek: t.canSeek === true, canGoNext: t.canGoNext === true, canGoPrevious: t.canGoPrevious === true,
+  };
+}
 const keyOf = (tabId, frameId) => `${tabId}:${frameId}`;
 
 // The frame that represents a window's player: a playing frame wins; among
@@ -76,11 +96,14 @@ function syncWindow(windowId) {
   const sig = JSON.stringify(rep.track);
   if (prev && prev.repKey === repKey && prev.sig === sig) return; // unchanged
   windowState.set(windowId, { repKey, sig, tabId: rep.tabId, frameId: rep.frameId });
-  send({ type: "update", tabId: windowId, frameId: 0, ...rep.track });
+  send({ type: "update", tabId: windowId, frameId: 0, ...rep.track, sourceId: `${repKey}:${rep.track.sourceId}` });
+  // Seeked is an event, not persistent state to replay from an older frame.
+  rep.track.seeked = false;
+  windowState.get(windowId).sig = JSON.stringify(rep.track);
 }
 
 function syncAllWindows() {
-  const ids = new Set([...frames.values()].map(f => f.windowId));
+  const ids = new Set([...frames.values()].map(f => f.windowId).filter(id => id >= 0));
   for (const id of ids) syncWindow(id);
 }
 
@@ -97,13 +120,16 @@ function connectHost() {
     return;
   }
 
-  hostPort.onMessage.addListener(handleHostMessage);
-  hostPort.onDisconnect.addListener(() => {
+  const port = hostPort, connectedAt = Date.now();
+  port.onMessage.addListener(handleHostMessage);
+  port.onDisconnect.addListener(() => {
+    // Reading lastError also prevents Chromium's unchecked-lastError warning.
+    void browser.runtime.lastError;
+    if (hostPort !== port) return;
     hostPort = null;
+    if (Date.now() - connectedAt >= 10_000) reconnectDelayMs = 500;
     scheduleReconnect();
   });
-
-  reconnectDelayMs = 500;
   send({ type: "hello", version: VERSION });
 
   // Re-push each window's representative to the fresh host (empty after a
@@ -124,9 +150,10 @@ function resyncAllTabs() {
 }
 
 function scheduleReconnect() {
+  if (reconnectTimer !== null) return;
   const delay = reconnectDelayMs;
   reconnectDelayMs = Math.min(reconnectDelayMs * 2, 5_000); // host is local — recover fast
-  setTimeout(ensureConnected, delay);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; ensureConnected(); }, delay);
 }
 
 function send(msg) {
@@ -165,30 +192,71 @@ function handleHostMessage(msg) {
 // Updates/removes from content scripts. Tracked per frame; consolidated to one
 // player per window via syncWindow.
 browser.runtime.onMessage.addListener((msg, sender) => {
-  if (!sender.tab || typeof sender.tab.id !== "number") return;
+  if (!sender.tab || !Number.isInteger(sender.tab.id) || sender.tab.id < 0) return;
   if (!msg || typeof msg !== "object") return;
   const tabId = sender.tab.id;
   const frameId = typeof sender.frameId === "number" ? sender.frameId : 0;
   const windowId = typeof sender.tab.windowId === "number" ? sender.tab.windowId : tabId;
   const k = keyOf(tabId, frameId);
 
+  const documentId = sender.documentId || msg.documentId || "";
   if (msg.kind === "update") {
-    frames.set(k, { tabId, frameId, windowId, track: msg.track, seq: ++seqCounter });
+    if (detachedTabs.has(tabId)) return;
+    const track = normalizeTrack(msg.track);
+    if (!track) return;
+    const old = frames.get(k);
+    frames.set(k, { tabId, frameId, windowId, documentId, track, seq: ++seqCounter });
+    if (old && old.windowId !== windowId) syncWindow(old.windowId);
     syncWindow(windowId);
   } else if (msg.kind === "remove") {
     const f = frames.get(k);
-    if (f) { frames.delete(k); syncWindow(f.windowId); }
+    if (f && (!f.documentId || !documentId || f.documentId === documentId)) {
+      frames.delete(k); syncWindow(f.windowId);
+    }
   }
 });
 
-// Tab closed → drop its frames, then re-sync any window it affected (which
-// removes the window player if that was its last media).
-browser.tabs.onRemoved.addListener((tabId) => {
+function dropTab(tabId) {
   const affected = new Set();
   for (const [k, f] of frames) {
     if (f.tabId === tabId) { affected.add(f.windowId); frames.delete(k); }
   }
+  detachedTabs.delete(tabId);
   for (const w of affected) syncWindow(w);
+}
+
+browser.tabs.onRemoved.addListener(dropTab);
+browser.tabs.onDetached.addListener((tabId, info) => {
+  detachedTabs.add(tabId);
+  const affected = new Set([info.oldWindowId]);
+  for (const f of frames.values()) if (f.tabId === tabId) {
+    if (f.windowId >= 0) affected.add(f.windowId);
+    f.windowId = -1;
+  }
+  for (const id of affected) syncWindow(id);
+});
+browser.tabs.onAttached.addListener((tabId, info) => {
+  detachedTabs.delete(tabId);
+  const affected = new Set([info.newWindowId]);
+  for (const f of frames.values()) if (f.tabId === tabId) {
+    if (f.windowId >= 0) affected.add(f.windowId);
+    f.windowId = info.newWindowId;
+  }
+  for (const id of affected) syncWindow(id);
+  browser.tabs.sendMessage(tabId, { kind: "mpris-resync" }).catch(() => {});
+});
+browser.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.discarded === true || changeInfo.status === "loading") dropTab(tabId);
+  if (changeInfo.status === "complete") browser.tabs.sendMessage(tabId, { kind: "mpris-resync" }).catch(() => {});
+});
+browser.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  dropTab(removedTabId);
+  browser.tabs.sendMessage(addedTabId, { kind: "mpris-resync" }).catch(() => {});
+});
+
+browser.windows.onRemoved.addListener(windowId => {
+  for (const [key, frame] of frames) if (frame.windowId === windowId) frames.delete(key);
+  syncWindow(windowId);
 });
 
 // Event-page lifecycle: (re)connect on browser start, install/update, and on

@@ -175,6 +175,10 @@
 
   // ---- media element discovery & hooking -----------------------------------
   const HOOKED = new WeakSet();
+  const BUFFERING = new WeakSet();
+  const CONTROLLED_MUTED = new WeakSet();
+  let documentActive = true;
+  const documentId = `${Date.now()}:${Math.random()}`;
   let positionTimer = null;
 
   function startPositionTicker() {
@@ -199,6 +203,8 @@
   function onMediaEvent(ev) {
     const t = ev.type;
     if (t === "seeked") seekedSinceNotify = true;
+    if (t === "waiting") BUFFERING.add(ev.target);
+    if (["playing", "pause", "ended", "emptied"].includes(t)) BUFFERING.delete(ev.target);
     if (t === "play" || t === "playing") startPositionTicker();
     if (t === "pause" || t === "ended" || t === "emptied") {
       // Stop the ticker only if nothing else is still playing.
@@ -211,7 +217,7 @@
     if (HOOKED.has(m)) return;
     HOOKED.add(m);
     ["play", "pause", "playing", "timeupdate", "durationchange", "seeked",
-     "volumechange", "ended", "loadedmetadata", "ratechange", "emptied"]
+     "volumechange", "ended", "loadedmetadata", "ratechange", "emptied", "waiting"]
       .forEach((ev) => m.addEventListener(ev, onMediaEvent, true));
     if (!m.paused && !m.ended) startPositionTicker();
   }
@@ -230,6 +236,10 @@
   const obs = new MutationObserver((muts) => {
     let found = false;
     for (const mu of muts) {
+      if (mu.removedNodes) mu.removedNodes.forEach(n => {
+        if (n.nodeType === 1 && (n.tagName === "VIDEO" || n.tagName === "AUDIO" || n.querySelector?.("video, audio"))) found = true;
+      });
+      if (mu.type === "attributes") found = true;
       if (!mu.addedNodes) continue;
       mu.addedNodes.forEach((n) => {
         if (n.nodeType !== 1) return;
@@ -241,7 +251,12 @@
     }
     if (found) scheduleNotify();
   });
-  try { obs.observe(document.documentElement, { childList: true, subtree: true }); } catch (_) {}
+  function observeMedia() {
+    if (!document.documentElement) return;
+    obs.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "poster"] });
+  }
+  observeMedia();
+  document.addEventListener("DOMContentLoaded", () => { observeMedia(); scheduleNotify(); }, { once: true });
 
   // ---- track building -------------------------------------------------------
   function parseSizeArea(s) {
@@ -294,6 +309,7 @@
   function durationOf(m) {
     if (!m) return 0;
     const d = m.duration;
+    if (d === Infinity) return 0; // Unknown live duration; seekable is a DVR range, not track length.
     if (isFinite(d) && d > 0) return d;
     try {
       const s = m.seekable;
@@ -308,11 +324,11 @@
   function pickActiveMedia() {
     const all = allMedia();
     if (!all.length) return null;
-    const real = all.filter((m) => isFinite(m.duration) && m.duration >= MIN_TRACK_SECONDS);
+    const real = all.filter(m => durationOf(m) >= MIN_TRACK_SECONDS || m.duration === Infinity);
     let pool = real.length ? real : all;
     // An audible element outranks any muted one, playing or not: a muted
     // autoplay loop must not speak for a page that also holds real playback.
-    const audible = pool.filter((m) => !m.muted && m.volume > 0);
+    const audible = pool.filter(m => CONTROLLED_MUTED.has(m) || (!m.muted && m.volume > 0));
     if (audible.length) pool = audible;
     const playing = pool.find((m) => !m.paused && !m.ended && (m.currentTime > 0 || m.readyState >= 2));
     if (playing) return playing;
@@ -341,13 +357,13 @@
     // are on the same timeline, so element position + setPositionState duration
     // compose correctly.
     let duration = durationOf(media);
-    if (!duration && positionState && isFinite(positionState.duration) && positionState.duration > 0) {
+    if (media?.duration !== Infinity && !duration && positionState && isFinite(positionState.duration) && positionState.duration > 0) {
       duration = positionState.duration;
     }
 
     // Reportable: a real Media Session, or a media element with a known
     // duration. A page with only a <title> is not a player.
-    const hasRealMedia = !!media && duration > 0;
+    const hasRealMedia = !!media && (duration >= MIN_TRACK_SECONDS || media.duration === Infinity);
 
     // Title: Media Session → (only when reporting via a media element)
     // document.title → hostname. The fallback never makes a page reportable on
@@ -362,6 +378,7 @@
     if (!artUrl && media && media.poster) artUrl = media.poster;
     if (!artUrl) artUrl = youtubeFallbackArt();
     if (!artUrl) artUrl = faviconUrl();
+    if (/^blob:/i.test(artUrl) || artUrl.length > (/^data:image\//i.test(artUrl) ? 256 * 1024 : 8192)) artUrl = "";
 
     // Position / rate / loop / volume: live media element first, with
     // setPositionState as the fallback (element-less players, or before the
@@ -369,11 +386,11 @@
     let position = 0, rate = 1, looping = false, volume = 1, playing;
     if (media) {
       position = isFinite(media.currentTime) ? media.currentTime : 0;
-      if (!position && positionState && positionState.position > 0) position = positionState.position;
+      if (media.readyState === 0 && !position && positionState && positionState.position > 0) position = positionState.position;
       rate = isFinite(media.playbackRate) && media.playbackRate > 0 ? media.playbackRate : 1;
       looping = !!media.loop;
       volume = isFinite(media.volume) ? (media.muted ? 0 : media.volume) : 1;
-      playing = !media.paused && !media.ended;
+      playing = !media.paused && !media.ended && !BUFFERING.has(media);
     } else if (positionState) {
       position = positionState.position || 0;
       rate = positionState.rate || 1;
@@ -387,12 +404,13 @@
     return {
       title, artist, album, artUrl, pageUrl: location.href,
       duration, position, playing, seeked, volume, rate, looping,
-      canSeek: duration > 0,
+      sourceId: String(media?.currentSrc || media?.src || "").slice(0, 8192),
+      canSeek: media ? !!media.seekable?.length : !!(handlers.seekto || handlers.seekforward || handlers.seekbackward),
       canGoNext: !!handlers.nexttrack,
       canGoPrevious: !!handlers.previoustrack,
       _hasMeta: hasMeta,
       _hasRealMedia: hasRealMedia,
-      _audible: !media || volume > 0,
+      _audible: !media || volume > 0 || CONTROLLED_MUTED.has(media),
     };
   }
 
@@ -416,33 +434,36 @@
   // pushed MPRIS property (Position is polled; Seeked is sent out-of-band), so
   // including them would defeat the steady-state no-traffic goal.
   let lastKey = "";
+  let lastSent = null;
   let reported = false;
 
   function trackKey(t) {
-    return [t.title, t.artist, t.album, t.artUrl,
-      Math.round(t.duration * 10), t.playing ? 1 : 0,
-      Math.round(t.volume * 100), Math.round(t.rate * 100),
-      t.looping ? 1 : 0, t.canSeek ? 1 : 0,
-      t.canGoNext ? 1 : 0, t.canGoPrevious ? 1 : 0].join("|");
+    return JSON.stringify([t.title, t.artist, t.album, t.artUrl, t.pageUrl, t.sourceId,
+      Math.round(t.duration * 10), t.playing, Math.round(t.volume * 100),
+      Math.round(t.rate * 100), t.looping, t.canSeek, t.canGoNext, t.canGoPrevious]);
   }
 
   function notify() {
+    if (!documentActive) return;
     const track = buildTrack();
     if (shouldReport(track)) {
-      const key = trackKey(track);
-      const seeked = track.seeked;
+      const key = trackKey(track), now = Date.now();
+      const predicted = lastSent ? lastSent.position + (lastSent.playing ? (now - lastSent.at) / 1000 * lastSent.rate : 0) : track.position;
+      const drifted = !!lastSent && Math.abs(track.position - predicted) > 0.5;
+      const seeked = track.seeked || drifted;
       seekedSinceNotify = false;
-      // Always send if a seek happened (position/Seeked is out-of-band), else
-      // only on a real field change.
-      if (key === lastKey && !seeked) { return; }
+      if (key === lastKey && !seeked) return;
       lastKey = key;
+      lastSent = { position: track.position, playing: track.playing, rate: track.rate, at: now };
       reported = true;
+      track.seeked = seeked;
       delete track._hasMeta;
       delete track._hasRealMedia;
-      browser.runtime.sendMessage({ kind: "update", track }).catch(() => {});
+      delete track._audible;
+      browser.runtime.sendMessage({ kind: "update", track, documentId }).catch(() => {});
     } else if (reported) {
-      reported = false; lastKey = "";
-      browser.runtime.sendMessage({ kind: "remove" }).catch(() => {});
+      reported = false; lastKey = ""; lastSent = null;
+      browser.runtime.sendMessage({ kind: "remove", documentId }).catch(() => {});
     }
   }
 
@@ -459,53 +480,88 @@
     try { window.postMessage({ source: "mpris-iso", ...msg }, "*"); } catch (_) {}
   }
 
-  function callHandler(name) {
+  let commandCounter = 0;
+  const pendingCommands = new Map();
+  function callHandler(name, detail = {}, fallback = null) {
     const h = handlers[name];
     if (!h) return false;
-    if (!XRAY) { postToMain({ type: "invoke", name }); return true; }
-    try { h(); return true; } catch (_) { return false; }
-  }
-
-  // Invoke a MediaSession seek handler with its detail object, used when there
-  // is no DOM media element to scrub. On Firefox the detail must be cloned into
-  // the page compartment to cross the Xray; on Chromium content-main.js (which
-  // lives in the page realm) invokes it. Best-effort either way.
-  function callSeekHandler(name, detail) {
-    const h = handlers[name];
-    if (!h) return false;
-    if (!XRAY) { postToMain({ type: "invoke-seek", name, detail }); return true; }
+    const arg = { ...detail, action: name };
+    if (!XRAY) {
+      const id = ++commandCounter;
+      if (fallback) {
+        const timer = setTimeout(() => {
+          pendingCommands.delete(id);
+          if (documentActive) fallback();
+        }, 750);
+        pendingCommands.set(id, { fallback, timer });
+      }
+      postToMain({ type: "invoke", name, detail: arg, id });
+      return true;
+    }
     try {
-      const arg = (typeof cloneInto === "function") ? cloneInto(detail, window) : detail;
-      h(arg);
+      const result = h(typeof cloneInto === "function" ? cloneInto(arg, window.wrappedJSObject) : arg);
+      if (result?.then && fallback) Promise.resolve(result).catch(fallback);
       return true;
     } catch (_) { return false; }
+  }
+
+  function callSeekHandler(name, detail) { return callHandler(name, detail); }
+
+  if (!XRAY) window.addEventListener("message", ev => {
+    const d = ev.data;
+    if (ev.source !== window || d?.source !== "mpris-main" || d.type !== "result") return;
+    const pending = pendingCommands.get(d.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingCommands.delete(d.id);
+    if (!d.handled && documentActive) pending.fallback();
+  });
+
+  function seekElement(m, position) {
+    if (!m || !isFinite(position)) return;
+    try {
+      const ranges = m.seekable;
+      if (!ranges?.length) return;
+      const start = ranges.start(0), end = ranges.end(ranges.length - 1);
+      m.currentTime = Math.max(start, Math.min(end, position));
+    } catch (_) {}
   }
 
   function handleCommand(action, value) {
     const m = pickActiveMedia();
     switch (action) {
-      case "play": if (!callHandler("play") && m) m.play().catch(() => {}); break;
-      case "pause": if (!callHandler("pause") && m) m.pause(); break;
-      case "playpause":
-        if (m) { (m.paused || m.ended) ? m.play().catch(() => {}) : m.pause(); }
-        else { callHandler("play") || callHandler("pause"); }
+      case "play": {
+        const fallback = () => m?.play().catch(() => {});
+        if (!callHandler("play", {}, fallback)) fallback();
         break;
-      case "stop":
-        if (!callHandler("stop") && m) { m.pause(); try { m.currentTime = 0; } catch (_) {} }
+      }
+      case "pause": {
+        const fallback = () => m?.pause();
+        if (!callHandler("pause", {}, fallback)) fallback();
         break;
+      }
+      case "playpause": {
+        const playing = m ? !m.paused && !m.ended : readMetadata()?.playbackState === "playing";
+        handleCommand(playing ? "pause" : "play");
+        return;
+      }
+      case "stop": {
+        const fallback = () => { if (m) { m.pause(); try { m.currentTime = 0; } catch (_) {} } };
+        if (!callHandler("stop", {}, fallback)) fallback();
+        break;
+      }
       case "next": callHandler("nexttrack"); break;
       case "previous": callHandler("previoustrack"); break;
       case "seek":
         if (typeof value === "number" && isFinite(value)) {
-          if (m) { try { m.currentTime = Math.max(0, m.currentTime + value); } catch (_) {} }
+          if (m) seekElement(m, m.currentTime + value);
           else callSeekHandler(value < 0 ? "seekbackward" : "seekforward", { seekOffset: Math.abs(value) });
         }
         break;
       case "setposition":
         if (typeof value === "number" && isFinite(value)) {
           if (m) {
-            const max = isFinite(m.duration) ? m.duration : value;
-            try { m.currentTime = Math.max(0, Math.min(max, value)); } catch (_) {}
+            seekElement(m, value);
           } else {
             callSeekHandler("seekto", { seekTime: value });
           }
@@ -514,8 +570,8 @@
       case "setvolume":
         if (m && typeof value === "number" && isFinite(value)) {
           try {
-            if (value <= 0) { m.muted = true; }
-            else { m.volume = Math.max(0, Math.min(1, value)); m.muted = false; }
+            if (value <= 0) { CONTROLLED_MUTED.add(m); m.muted = true; }
+            else { m.volume = Math.max(0, Math.min(1, value)); m.muted = false; CONTROLLED_MUTED.delete(m); }
           } catch (_) {}
         }
         break;
@@ -528,7 +584,7 @@
         if (m && typeof value === "number") { try { m.loop = value > 0.5; } catch (_) {} }
         break;
       case "__resync":
-        lastKey = ""; reported = false; notify(); return;
+        lastKey = ""; lastSent = null; reported = false; notify(); return;
     }
     scheduleNotify();
   }
@@ -556,12 +612,22 @@
     } catch (_) {}
   }
 
-  // bfcache: restoring from back/forward cache re-reports; suspending into it
-  // is NOT a hard remove (the page may come back).
-  window.addEventListener("pageshow", (e) => { if (e.persisted) { lastKey = ""; reported = false; scheduleNotify(); } });
-  window.addEventListener("pagehide", (e) => {
-    if (e.persisted) return; // going into bfcache — keep the player
-    if (reported) { browser.runtime.sendMessage({ kind: "remove" }).catch(() => {}); reported = false; }
+  window.addEventListener("pageshow", e => {
+    documentActive = true;
+    if (e.persisted) {
+      lastKey = ""; lastSent = null; reported = false;
+      if (anyPlaying()) startPositionTicker();
+      scheduleNotify();
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    documentActive = false;
+    stopPositionTicker();
+    clearTimeout(notifyTimer); notifyTimer = null;
+    for (const pending of pendingCommands.values()) clearTimeout(pending.timer);
+    pendingCommands.clear();
+    if (reported) browser.runtime.sendMessage({ kind: "remove", documentId }).catch(() => {});
+    reported = false; lastKey = ""; lastSent = null;
   });
 
   // Initial probe.

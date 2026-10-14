@@ -236,7 +236,7 @@ media-key routing depends on your desktop's active-player picker (e.g.
 | `Volume`             | Active media element volume (muted reports 0)          |
 | `Rate`               | `media.playbackRate` (read/write, 0.25–4.0)            |
 | `LoopStatus`         | `media.loop` (read/write; `None` / `Track`)            |
-| `CanSeek`            | True iff duration is finite                            |
+| `CanSeek`            | True iff the source exposes a seekable range or seek handler                            |
 | `CanPlay`/`CanPause` | True iff a track with content is loaded                |
 | `CanGoNext`/`CanGoPrevious` | True iff page registered the corresponding `setActionHandler` |
 | `CanRaise`           | True — `Raise` focuses the owning tab                  |
@@ -246,55 +246,59 @@ media-key routing depends on your desktop's active-player picker (e.g.
 | `Play` / `Pause` / `PlayPause` | Calls page's handler if registered, else toggles the active media element |
 | `Next` / `Previous`  | Calls page's `setActionHandler('nexttrack' / 'previoustrack')` |
 | `Seek(offset)`       | `media.currentTime += offset`                          |
-| `SetPosition(_, position)` | `media.currentTime = position`                   |
+| `SetPosition(trackId, position)` | Validated against the current track, then applied within the seekable range                   |
 | `Stop`               | Pauses, resets to 0, reports `Stopped`                 |
 | `Raise`              | Focuses the owning tab + window                        |
 
 `Volume`, `Rate`, and `LoopStatus` are read/write. `mpris:trackid` changes on a
 genuine track change (e.g. YouTube autoplay) so clients reset Position.
 
-## Debug logging
+## Development and checks
 
-Two layers, one switch.
+Run `cargo test --locked --manifest-path host/Cargo.toml`,
+`cargo clippy --locked --manifest-path host/Cargo.toml -- -D warnings`,
+`node --test tests/extension.test.cjs`, and
+`python3 -m unittest discover -s tests -p 'test_*.py'`.
+After building the release host, `python3 tests/smoke-install.py` exercises all
+native-manifest targets in a disposable directory and
+`dbus-run-session -- python3 tests/smoke-host.py host/target/release/mpris-hyprland-host`
+checks the real native host without publishing test players to your desktop.
 
-### 1. Rust host (file + stderr)
-
-Always writes to `${XDG_STATE_HOME:-~/.local/state}/mpris-hyprland-host/host.log`
-(size-capped at 10 MiB, rotated to `host.log.1`), and to stderr when the
-browser forwards it (run the browser from a terminal to see it inline).
-
-Default filter is `mpris_hyprland_host=info,warn` — lifecycle, player
-create/remove, and D-Bus method calls. Routine per-message frames and the
-per-update changed-property set are at `debug`; position interpolation detail
-is at `trace`. Crank it via `RUST_LOG` before launching the browser:
+For temporary Firefox/Zen testing, build an unsigned XPI with:
 
 ```sh
-RUST_LOG=mpris_hyprland_host=debug zen-browser   # + every frame & changed-prop set
-RUST_LOG=mpris_hyprland_host=trace zen-browser   # + position/interpolation detail
-RUST_LOG=trace zen-browser                       # + zbus internals (very noisy)
+python3 scripts/build-extension.py --browser firefox --output build/test.xpi
 ```
 
-A useful test signal lives at `debug`: each update logs the exact
-`changed: [Metadata,PlaybackStatus,…]` set it emitted — during steady playback
-that line shouldn't appear at all (proof the no-traffic path works).
+Load it through `about:debugging` → This Firefox → Load Temporary Add-on.
+Use a separate browser profile to keep your normal extension installation intact.
+For Chromium, pass `--browser chromium`, unpack the ZIP, and load its directory
+through `chrome://extensions` → Developer mode → Load unpacked.
+The user installer registers Chrome, Brave, Vivaldi, Edge, and Opera manifests
+as well as Firefox-family browsers and Chromium. Chromium-family native ports
+use the same host, but the extension manifest differs from Firefox's.
 
-### 2. Extension (background + content), one flag
+## Releases and package integration
 
-Open `about:debugging#/runtime/this-firefox` → "MPRIS for Hyprland" →
-**Inspect**. The console shows `[mpris-bg …]` (background) and `[mpris-cs …]`
-(content) lines. One flag drives both layers, persisted in `storage.local` and
-pushed live to already-loaded content scripts (no reload). Toggle from the
-Inspect console:
+All package recipes target a version tag, not a moving branch. Release the
+matching `v<version>` tag after signing the Firefox XPI and packing the Chromium
+CRX. Keep the host, both extension manifests, and all three package recipes at
+the same version. Release packages reject stale signed bundles. Set
+`MPRIS_HYPRLAND_TEST_BUILD=1` only for local unsigned package smoke tests.
+A package source override is available through `MPRIS_HYPRLAND_REPO_URL` and
+`MPRIS_HYPRLAND_REF` for explicit development builds.
 
-```js
-mprisDebug(true)    // verbose, all layers
-mprisDebug(false)   // quiet (default)
-```
+The package merges only this extension's `ExtensionSettings` entry into the
+Firefox and Zen policies. It preserves unrelated settings and administrator
+overrides, and removes only its own entry on uninstall. Upgrading from the older
+whole-policy package preserves the previous file before pacman removes it.
 
-`DEBUG` defaults to **off** so the extension is silent (and doesn't log page
-URLs) in normal use. With it on, content-script lines note timer start/stop and
-bfcache restores — so you can watch the "zero timers when idle" behavior
-directly.
+## Diagnostics
+
+The host reports framing and player-update failures on stderr, which the browser
+can forward when launched from a terminal. Routine playback is quiet. There is
+no file logger or `mprisDebug()` console API. Debug the WebExtension through
+`about:debugging` or Chromium's extension service-worker inspector.
 
 ## Troubleshooting
 
@@ -312,7 +316,7 @@ and did.
 
 **Player shows up but methods don't work.** Check the extension's background
 script console (`about:debugging` → Inspect on the extension) with
-`mprisDebug(true)`. Strict-CSP pages are fine now — the content script reads the
+the extension inspector. Strict-CSP pages are fine now — the content script reads the
 page through Firefox's Xray and injects no `<script>` — but a page that doesn't
 register Media Session action handlers and has no controllable `<video>`/
 `<audio>` element (rare) can't be driven.

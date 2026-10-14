@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "MPRIS for Hyprland",
   "short_name": "firefox-mpris-hyprland",
-  "version": "0.2.2",
-  "description": "Per-tab MPRIS bridge for Firefox — exposes Media Session metadata, position, and artwork on D-Bus for waybar / quickshell / playerctl. Desktop-agnostic, lighter than plasma-browser-integration.",
+  "version": "0.2.3",
+  "description": "Per-window MPRIS bridge for Firefox \u2014 exposes Media Session metadata, position, and artwork on D-Bus for waybar / quickshell / playerctl. Desktop-agnostic, lighter than plasma-browser-integration.",
   "author": "MainstreamOS",
   "browser_specific_settings": {
     "gecko": {
@@ -13,19 +13,24 @@
   },
   "permissions": [
     "tabs",
-    "nativeMessaging",
-    "storage"
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "background": {
-    "scripts": ["background.js"]
+    "scripts": [
+      "background.js"
+    ]
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": false

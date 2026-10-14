@@ -17,6 +17,14 @@ pub struct PlayerIface {
 }
 
 impl PlayerIface {
+    fn track_path(&self, counter: u64) -> String {
+        format!(
+            "/io/github/mainstreamos/mpris_hyprland/w{}/f{}/n{counter}",
+            self.tab_id.unsigned_abs(),
+            self.frame_id.unsigned_abs()
+        )
+    }
+
     fn send(&self, action: Action, value: Option<f64>) {
         let _ = self.cmd_tx.send(OutMessage::Command {
             tab_id: self.tab_id,
@@ -39,12 +47,7 @@ impl PlayerIface {
         // mpris:trackid — required, unique object path. Includes the per-track
         // counter so it changes on a genuine track change and clients reset
         // Position. tab/frame use unsigned magnitude to stay path-valid.
-        let track_path = format!(
-            "/org/mpris/MediaPlayer2/firefox/t{}/f{}/{}",
-            self.tab_id.unsigned_abs(),
-            self.frame_id.unsigned_abs(),
-            state.track_counter
-        );
+        let track_path = self.track_path(state.track_counter);
         if let Ok(op) = ObjectPath::try_from(track_path.as_str()) {
             if let Ok(ov) = OwnedValue::try_from(Value::from(op)) {
                 m.insert("mpris:trackid".into(), ov);
@@ -126,15 +129,31 @@ impl PlayerIface {
 
     /// Seek by `offset` microseconds (relative).
     async fn seek(&self, offset: i64) {
-        let secs = offset as f64 / 1_000_000.0;
-        self.send(Action::Seek, Some(secs));
+        if !lock_state(&self.state).track.can_seek {
+            return;
+        }
+        let state = lock_state(&self.state);
+        let target = state.current_position_us().saturating_add(offset);
+        if state.track.duration > 0.0 && target > (state.track.duration * 1_000_000.0) as i64 {
+            self.send(Action::Next, None);
+        } else {
+            self.send(Action::Seek, Some(offset as f64 / 1_000_000.0));
+        }
     }
 
-    /// SetPosition(track_id: o, position: x). We trust the position; the
-    /// track_id is accepted loosely.
-    async fn set_position(&self, _track_id: ObjectPath<'_>, position: i64) {
-        let secs = position as f64 / 1_000_000.0;
-        self.send(Action::SetPosition, Some(secs));
+    /// Ignore stale scrubs and invalid positions instead of applying them to
+    /// a new track that happened to start before the command arrived.
+    async fn set_position(&self, track_id: ObjectPath<'_>, position: i64) {
+        let state = lock_state(&self.state);
+        if !state.track.can_seek
+            || position < 0
+            || track_id.as_str() != self.track_path(state.track_counter)
+            || (state.track.duration > 0.0
+                && position > (state.track.duration * 1_000_000.0) as i64)
+        {
+            return;
+        }
+        self.send(Action::SetPosition, Some(position as f64 / 1_000_000.0));
     }
 
     /// OpenUri — not implemented (would require opening a tab in Firefox).
@@ -185,7 +204,12 @@ impl PlayerIface {
     #[zbus(property)]
     fn set_rate(&self, value: f64) {
         let v = value.clamp(0.25, 4.0);
-        lock_state(&self.state).track.rate = v;
+        {
+            let mut state = lock_state(&self.state);
+            state.last_position_us = state.current_position_us();
+            state.last_position_at = std::time::Instant::now();
+            state.track.rate = v;
+        }
         self.send(Action::SetRate, Some(v));
     }
 
@@ -275,4 +299,93 @@ impl PlayerIface {
 
     #[zbus(signal)]
     pub async fn seeked(emitter: &SignalEmitter<'_>, position: i64) -> zbus::Result<()>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::TrackInfo;
+    fn player() -> (PlayerIface, mpsc::UnboundedReceiver<OutMessage>) {
+        let (cmd_tx, rx) = mpsc::unbounded_channel();
+        (
+            PlayerIface {
+                state: Arc::new(Mutex::new(PlayerState::new(TrackInfo {
+                    title: "Track".into(),
+                    duration: 100.0,
+                    position: 10.0,
+                    ..TrackInfo::default()
+                }))),
+                cmd_tx,
+                tab_id: 1,
+                frame_id: 0,
+            },
+            rx,
+        )
+    }
+    #[tokio::test]
+    async fn stale_and_invalid_scrubs_are_ignored() {
+        let (player, mut rx) = player();
+        let current = player.track_path(0);
+        player
+            .set_position(ObjectPath::try_from("/stale").unwrap(), 20_000_000)
+            .await;
+        player
+            .set_position(ObjectPath::try_from(current.as_str()).unwrap(), -1)
+            .await;
+        player
+            .set_position(ObjectPath::try_from(current.as_str()).unwrap(), 101_000_000)
+            .await;
+        assert!(rx.try_recv().is_err());
+        player
+            .set_position(ObjectPath::try_from(current.as_str()).unwrap(), 20_000_000)
+            .await;
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            OutMessage::Command {
+                action: Action::SetPosition,
+                value: Some(20.0),
+                ..
+            }
+        ));
+        lock_state(&player.state).track_counter += 1;
+        player
+            .set_position(ObjectPath::try_from(current.as_str()).unwrap(), 30_000_000)
+            .await;
+        assert!(rx.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn nonseekable_tracks_ignore_both_methods() {
+        let (player, mut rx) = player();
+        lock_state(&player.state).track.can_seek = false;
+        player.seek(1_000_000).await;
+        let current = player.track_path(0);
+        player
+            .set_position(ObjectPath::try_from(current.as_str()).unwrap(), 20_000_000)
+            .await;
+        assert!(rx.try_recv().is_err());
+    }
+    #[tokio::test]
+    async fn seeking_past_end_advances_track() {
+        let (player, mut rx) = player();
+        player.seek(100_000_000).await;
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            OutMessage::Command {
+                action: Action::Next,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn changing_rate_preserves_current_position() {
+        let (player, _) = player();
+        {
+            let mut state = lock_state(&player.state);
+            state.track.playing = true;
+            state.last_position_at -= std::time::Duration::from_secs(30);
+        }
+        player.set_rate(2.0);
+        let pos = lock_state(&player.state).current_position_us();
+        assert!((40_000_000..41_000_000).contains(&pos));
+    }
 }

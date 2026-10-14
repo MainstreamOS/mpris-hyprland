@@ -1,0 +1,18 @@
+pre_upgrade() {
+    # Older releases owned the whole file without backup=(). Preserve it
+    # before pacman removes the old owned file during this migration.
+    install -d -m0755 /var/lib/mpris-hyprland
+    for browser in firefox zen; do
+        path="/etc/$browser/policies/policies.json"
+        if [[ -f "$path" ]]; then
+            cp -p -- "$path" "/var/lib/mpris-hyprland/$browser-upgrade-policy.json"
+        fi
+    done
+}
+post_install() {
+    python3 /usr/lib/mpris-hyprland/manage-policies.py install
+}
+post_upgrade() { post_install; }
+pre_remove() {
+    python3 /usr/lib/mpris-hyprland/manage-policies.py remove
+}
