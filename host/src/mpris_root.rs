@@ -1,11 +1,13 @@
 //! `org.mpris.MediaPlayer2` — the root MPRIS interface.
 
 use crate::protocol::{Action, FrameId, OutMessage, TabId};
+use crate::state::{lock_state, PlayerState};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use zbus::interface;
 
 pub struct RootIface {
-    pub identity: String,
+    pub state: Arc<Mutex<PlayerState>>,
     /// Basename of the browser's .desktop file, so MPRIS clients resolve the
     /// right app icon (e.g. "zen" on Zen, not "firefox").
     pub desktop_entry: String,
@@ -52,8 +54,8 @@ impl RootIface {
     }
 
     #[zbus(property)]
-    fn identity(&self) -> &str {
-        &self.identity
+    fn identity(&self) -> String {
+        crate::make_identity(&lock_state(&self.state).track)
     }
 
     #[zbus(property)]

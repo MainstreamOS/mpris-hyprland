@@ -7,6 +7,7 @@
 //! Raise/...) from D-Bus back to the extension on stdout so the page can act
 //! on them.
 
+mod artwork;
 mod messaging;
 mod mpris_player;
 mod mpris_root;
@@ -248,8 +249,9 @@ async fn handle_message(
         InMessage::Update {
             tab_id,
             frame_id,
-            track,
+            mut track,
         } => {
+            track.art_url = artwork::resolve(&track.art_url);
             let key = PlayerKey { tab_id, frame_id };
             let existing = {
                 let guard = players.lock().await;
@@ -298,8 +300,6 @@ async fn create_player(
 
     let state = Arc::new(StdMutex::new(PlayerState::new(track)));
 
-    let identity = make_identity(&lock_state(&state).track);
-
     let player_iface = mpris_player::PlayerIface {
         state: state.clone(),
         cmd_tx: cmd_tx.clone(),
@@ -307,7 +307,7 @@ async fn create_player(
         frame_id: key.frame_id,
     };
     let root_iface = mpris_root::RootIface {
-        identity,
+        state: state.clone(),
         desktop_entry: desktop_entry().to_string(),
         cmd_tx,
         tab_id: key.tab_id,
@@ -339,6 +339,7 @@ async fn create_player(
 }
 
 async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result<()> {
+    let identity_changed = make_identity(&lock_state(&handle.state).track) != make_identity(&track);
     let UpdateOutcome { changed, position } = {
         let mut state = lock_state(&handle.state);
         state.apply_update(track)
@@ -346,13 +347,24 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
 
     // Nothing to announce — steady-state playback. Position is read on demand
     // by clients, never pushed, so this is the common no-traffic path.
-    if !changed.any() && matches!(position, PositionDelta::Continuous) {
+    if !identity_changed && !changed.any() && matches!(position, PositionDelta::Continuous) {
         return Ok(());
     }
 
     let conn = &handle._connection;
     let path: zbus::zvariant::ObjectPath<'static> =
         zbus::zvariant::ObjectPath::try_from(PLAYER_OBJECT_PATH).context("path")?;
+
+    if identity_changed {
+        let root = conn
+            .object_server()
+            .interface::<_, mpris_root::RootIface>(PLAYER_OBJECT_PATH)
+            .await?;
+        root.get()
+            .await
+            .identity_changed(root.signal_emitter())
+            .await?;
+    }
 
     let iface_ref = conn
         .object_server()
@@ -375,6 +387,8 @@ async fn update_existing(handle: &Arc<PlayerHandle>, track: TrackInfo) -> Result
             iface.volume_changed(emitter).await.ok();
         }
         if changed.rate {
+            iface.minimum_rate_changed(emitter).await.ok();
+            iface.maximum_rate_changed(emitter).await.ok();
             iface.rate_changed(emitter).await.ok();
         }
         if changed.loop_status {

@@ -75,3 +75,27 @@ test('repeated early disconnects retain exponential reconnect backoff',()=>{
 test('detach cleans stored window even when browser reports a newer window ID',()=>{const b=background();b.update(10,1);b.tabs.onDetached.emit(10,{oldWindowId:29});assert(b.sent.some(m=>m.type==='remove'&&m.tabId===1));});
 
 test('window closure clears its source even without tab-removal events',()=>{const b=background();b.update(10,1);b.windows.onRemoved.emit(1);assert.equal(b.sent.at(-1).type,'remove');});
+
+test('DOM controls are advertised only while a real media element exists',()=>{
+ const elements=[media()],c=content(elements);c.T.setMeta({title:'Session'});c.T.notify();
+ for(const key of ['canSetVolume','canSetRate','canSetLoop'])assert.equal(c.sent.at(-1).track[key],true);
+ elements.length=0;c.T.notify();
+ for(const key of ['canSetVolume','canSetRate','canSetLoop'])assert.equal(c.sent.at(-1).track[key],false);
+});
+test('background validates control capabilities rather than trusting truthy strings',()=>{
+ const b=background();b.update(10,1,{canSetVolume:'true',canSetRate:true,canSetLoop:1});
+ assert.equal(b.sent.at(-1).canSetVolume,false);assert.equal(b.sent.at(-1).canSetRate,true);assert.equal(b.sent.at(-1).canSetLoop,false);
+});
+test('unusable high-resolution artwork cannot mask usable alternatives',()=>{
+ const c=content([media({poster:'https://example.com/poster.png'})]);
+ c.T.setMeta({title:'Art',artwork:[{src:'blob:https://example.com/art',sizes:'any'},{src:'https://example.com/cover.png',sizes:'64x64'}]});
+ assert.equal(c.T.buildTrack().artUrl,'https://example.com/cover.png');
+ c.T.setMeta({title:'Art',artwork:[{src:'data:image/png;base64,'+'x'.repeat(256*1024),sizes:'any'}]});
+ assert.equal(c.T.buildTrack().artUrl,'https://example.com/poster.png');
+});
+test('invalid posters fall back to a usable favicon',()=>{
+ const c=content([media({poster:'blob:https://example.com/art'})]);
+ c.ctx.document.querySelectorAll=s=>s==='video, audio'?[media({poster:'blob:bad'})]:[
+  {href:'blob:bad',getAttribute:()=> 'any'}, {href:'https://example.com/icon.png',getAttribute:()=> '32x32'}];
+ assert.equal(c.T.buildTrack().artUrl,'https://example.com/icon.png');
+});

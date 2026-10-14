@@ -86,6 +86,20 @@ impl PlayerIface {
             put("xesam:url", Value::from(state.track.page_url.as_str()));
         }
 
+        put("mainstream:capabilitiesVersion", Value::from(1_i32));
+        put(
+            "mainstream:canSetVolume",
+            Value::from(state.track.can_set_volume),
+        );
+        put(
+            "mainstream:canSetRate",
+            Value::from(state.track.can_set_rate),
+        );
+        put(
+            "mainstream:canSetLoop",
+            Value::from(state.track.can_set_loop),
+        );
+        put("mainstream:canShuffle", Value::from(false));
         m
     }
 }
@@ -185,14 +199,26 @@ impl PlayerIface {
         }
     }
 
-    /// LoopStatus write: map None→off, Track/Playlist→on (a browser media
-    /// element only has a single-element `loop`, so both "on" values collapse
-    /// to element.loop = true).
     #[zbus(property)]
-    fn set_loop_status(&self, value: String) {
-        let on = value != "None";
-        lock_state(&self.state).track.looping = on;
+    fn set_loop_status(&self, value: String) -> fdo::Result<()> {
+        let mut state = lock_state(&self.state);
+        if !state.track.can_set_loop {
+            return Err(fdo::Error::NotSupported(
+                "This source has no loop control".into(),
+            ));
+        }
+        let on = match value.as_str() {
+            "None" => false,
+            "Track" => true,
+            _ => {
+                return Err(fdo::Error::NotSupported(
+                    "Only None and Track loop modes are supported".into(),
+                ))
+            }
+        };
+        state.track.looping = on;
         self.send(Action::SetLoop, Some(if on { 1.0 } else { 0.0 }));
+        Ok(())
     }
 
     #[zbus(property)]
@@ -202,27 +228,25 @@ impl PlayerIface {
     }
 
     #[zbus(property)]
-    fn set_rate(&self, value: f64) {
+    fn set_rate(&self, value: f64) -> fdo::Result<()> {
+        if !value.is_finite() {
+            return Err(fdo::Error::InvalidArgs("Rate must be finite".into()));
+        }
         let v = value.clamp(0.25, 4.0);
         {
             let mut state = lock_state(&self.state);
+            if !state.track.can_set_rate {
+                return Err(fdo::Error::NotSupported(
+                    "This source has no rate control".into(),
+                ));
+            }
             state.last_position_us = state.current_position_us();
             state.last_position_at = std::time::Instant::now();
             state.track.rate = v;
         }
         self.send(Action::SetRate, Some(v));
+        Ok(())
     }
-
-    #[zbus(property)]
-    fn shuffle(&self) -> bool {
-        false
-    }
-
-    /// Shuffle write: accepted as a no-op. CanControl is true, so refusing the
-    /// set would surface a D-Bus error in clients; there's no per-tab shuffle
-    /// concept to honor, so we swallow it.
-    #[zbus(property)]
-    fn set_shuffle(&self, _value: bool) {}
 
     #[zbus(property)]
     fn metadata(&self) -> HashMap<String, OwnedValue> {
@@ -236,12 +260,21 @@ impl PlayerIface {
     }
 
     #[zbus(property)]
-    fn set_volume(&self, value: f64) {
+    fn set_volume(&self, value: f64) -> fdo::Result<()> {
+        if !lock_state(&self.state).track.can_set_volume {
+            return Err(fdo::Error::NotSupported(
+                "This source has no volume control".into(),
+            ));
+        }
+        if !value.is_finite() {
+            return Err(fdo::Error::InvalidArgs("Volume must be finite".into()));
+        }
         let v = value.clamp(0.0, 1.0);
         // Optimistic local update so a subsequent read reflects the request
         // before the page round-trips.
         lock_state(&self.state).track.volume = v;
         self.send(Action::SetVolume, Some(v));
+        Ok(())
     }
 
     #[zbus(property)]
@@ -252,12 +285,22 @@ impl PlayerIface {
 
     #[zbus(property)]
     fn minimum_rate(&self) -> f64 {
-        0.25
+        let state = lock_state(&self.state);
+        if state.track.can_set_rate {
+            0.25
+        } else {
+            state.track.rate
+        }
     }
 
     #[zbus(property)]
     fn maximum_rate(&self) -> f64 {
-        4.0
+        let state = lock_state(&self.state);
+        if state.track.can_set_rate {
+            4.0
+        } else {
+            state.track.rate
+        }
     }
 
     #[zbus(property)]
@@ -313,6 +356,9 @@ mod tests {
                     title: "Track".into(),
                     duration: 100.0,
                     position: 10.0,
+                    can_set_rate: true,
+                    can_set_volume: true,
+                    can_set_loop: true,
                     ..TrackInfo::default()
                 }))),
                 cmd_tx,
@@ -384,8 +430,41 @@ mod tests {
             state.track.playing = true;
             state.last_position_at -= std::time::Duration::from_secs(30);
         }
-        player.set_rate(2.0);
+        player.set_rate(2.0).unwrap();
         let pos = lock_state(&player.state).current_position_us();
         assert!((40_000_000..41_000_000).contains(&pos));
+    }
+    #[test]
+    fn unsupported_controls_fail_without_mutating_or_relaying() {
+        let (player, mut rx) = player();
+        {
+            let mut state = lock_state(&player.state);
+            state.track.can_set_volume = false;
+            state.track.can_set_rate = false;
+            state.track.can_set_loop = false;
+        }
+        assert!(player.set_volume(0.2).is_err());
+        assert!(player.set_rate(2.0).is_err());
+        assert!(player.set_loop_status("Track".into()).is_err());
+        assert_eq!(player.volume(), 1.0);
+        assert_eq!(player.rate(), 1.0);
+        assert_eq!(player.loop_status(), "None");
+        assert_eq!(player.minimum_rate(), player.maximum_rate());
+        assert!(rx.try_recv().is_err());
+    }
+    #[test]
+    fn playlist_loop_and_nonfinite_values_are_rejected() {
+        let (player, mut rx) = player();
+        assert!(player.set_loop_status("Playlist".into()).is_err());
+        assert!(player.set_volume(f64::NAN).is_err());
+        assert!(player.set_rate(f64::INFINITY).is_err());
+        assert!(rx.try_recv().is_err());
+        player.set_loop_status("Track".into()).unwrap();
+        player.set_volume(0.4).unwrap();
+        player.set_rate(1.5).unwrap();
+        assert_eq!(player.loop_status(), "Track");
+        assert_eq!(player.volume(), 0.4);
+        assert_eq!(player.rate(), 1.5);
+        assert!(rx.try_recv().is_ok());
     }
 }

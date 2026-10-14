@@ -60,6 +60,7 @@ function normalizeTrack(t) {
     duration: boundedNumber(t.duration, 0, 0, 1e10), position: boundedNumber(t.position, 0, 0, 1e10),
     volume: boundedNumber(t.volume, 1, 0, 1), rate: boundedNumber(t.rate, 1, 0.25, 4),
     playing: t.playing === true, seeked: t.seeked === true, looping: t.looping === true,
+    canSetVolume: t.canSetVolume === true, canSetRate: t.canSetRate === true, canSetLoop: t.canSetLoop === true,
     canSeek: t.canSeek === true, canGoNext: t.canGoNext === true, canGoPrevious: t.canGoPrevious === true,
   };
 }

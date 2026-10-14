@@ -250,7 +250,21 @@ media-key routing depends on your desktop's active-player picker (e.g.
 | `Stop`               | Pauses, resets to 0, reports `Stopped`                 |
 | `Raise`              | Focuses the owning tab + window                        |
 
-`Volume`, `Rate`, and `LoopStatus` are read/write. `mpris:trackid` changes on a
+`Volume`, `Rate`, and `LoopStatus` are writable when the page exposes a real
+media element. Element-less Media Sessions keep their transport controls but
+reject unsupported setters; their minimum and maximum rates match. `Shuffle`
+is omitted because browsers expose no corresponding control. The shell reads
+`mainstream:capabilitiesVersion` and the `mainstream:canSetVolume`,
+`mainstream:canSetRate`, `mainstream:canSetLoop`, and `mainstream:canShuffle`
+metadata flags to hide unavailable controls.
+
+The browser/site Identity follows the current representative tab. Embedded
+image artwork is decoded into private, content-addressed files under
+`$XDG_CACHE_HOME/mpris-hyprland/artwork` (or `~/.cache`), allowing ordinary
+MPRIS clients to load it without understanding data URLs. Invalid or oversized
+artwork candidates are skipped before choosing another image, poster or favicon.
+
+`mpris:trackid` changes on a
 genuine track change (e.g. YouTube autoplay) so clients reset Position.
 
 ## Development and checks

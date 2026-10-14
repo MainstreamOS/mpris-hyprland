@@ -8,7 +8,7 @@ web-ext-artifacts/
 
 # makepkg in-tree build artifacts (when running makepkg from the repo root)
 pkg/
-src/
+/src/
 /mpris-hyprland/
 *.pkg.tar.zst
 *.pkg.tar.zst.sig

@@ -67,6 +67,12 @@ pub struct TrackInfo {
     /// Whether the page advertised a "previous" handler via Media Session.
     #[serde(default)]
     pub can_go_previous: bool,
+    #[serde(default)]
+    pub can_set_volume: bool,
+    #[serde(default)]
+    pub can_set_rate: bool,
+    #[serde(default)]
+    pub can_set_loop: bool,
 }
 
 impl TrackInfo {
@@ -104,6 +110,9 @@ impl Default for TrackInfo {
             can_seek: true,
             can_go_next: false,
             can_go_previous: false,
+            can_set_volume: false,
+            can_set_rate: false,
+            can_set_loop: false,
         }
     }
 }

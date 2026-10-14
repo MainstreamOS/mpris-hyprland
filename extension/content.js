@@ -266,8 +266,15 @@
     return m ? Number(m[1]) * Number(m[2]) : 0;
   }
 
+  function usableArtwork(url) {
+    return typeof url === "string" && /^(https?:|data:image\/)/i.test(url)
+      && url.length <= (/^data:/i.test(url) ? 256 * 1024 : 8192) ? url : "";
+  }
+
   function bestArtwork(artwork) {
     if (!artwork || !artwork.length) return "";
+    artwork = artwork.filter(item => usableArtwork(item.src));
+    if (!artwork.length) return "";
     let best = artwork[0], area = parseSizeArea(best.sizes);
     for (let i = 1; i < artwork.length; i++) {
       const a = parseSizeArea(artwork[i].sizes);
@@ -287,6 +294,7 @@
   function faviconUrl() {
     try {
       const links = Array.from(document.querySelectorAll('link[rel~="icon"]'));
+      links.splice(0, links.length, ...links.filter(l => usableArtwork(l.href)));
       if (!links.length) return "";
       let best = links[0], area = parseSizeArea(best.getAttribute("sizes"));
       for (const l of links) {
@@ -375,10 +383,10 @@
     const album = (meta && meta.album) || "";
 
     let artUrl = (meta && bestArtwork(meta.artwork)) || "";
-    if (!artUrl && media && media.poster) artUrl = media.poster;
+    if (!artUrl && media && media.poster) artUrl = usableArtwork(media.poster);
     if (!artUrl) artUrl = youtubeFallbackArt();
     if (!artUrl) artUrl = faviconUrl();
-    if (/^blob:/i.test(artUrl) || artUrl.length > (/^data:image\//i.test(artUrl) ? 256 * 1024 : 8192)) artUrl = "";
+    artUrl = usableArtwork(artUrl);
 
     // Position / rate / loop / volume: live media element first, with
     // setPositionState as the fallback (element-less players, or before the
@@ -406,6 +414,7 @@
       duration, position, playing, seeked, volume, rate, looping,
       sourceId: String(media?.currentSrc || media?.src || "").slice(0, 8192),
       canSeek: media ? !!media.seekable?.length : !!(handlers.seekto || handlers.seekforward || handlers.seekbackward),
+      canSetVolume: !!media, canSetRate: !!media, canSetLoop: !!media,
       canGoNext: !!handlers.nexttrack,
       canGoPrevious: !!handlers.previoustrack,
       _hasMeta: hasMeta,
@@ -440,7 +449,7 @@
   function trackKey(t) {
     return JSON.stringify([t.title, t.artist, t.album, t.artUrl, t.pageUrl, t.sourceId,
       Math.round(t.duration * 10), t.playing, Math.round(t.volume * 100),
-      Math.round(t.rate * 100), t.looping, t.canSeek, t.canGoNext, t.canGoPrevious]);
+      Math.round(t.rate * 100), t.looping, t.canSeek, t.canGoNext, t.canGoPrevious, t.canSetVolume, t.canSetRate, t.canSetLoop]);
   }
 
   function notify() {

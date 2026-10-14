@@ -124,10 +124,15 @@ impl PlayerState {
 
         // Diff every field that maps to a PropertiesChanged member.
         let changed = Changed {
-            metadata: logical_track_changed || self.track.art_url != new_track.art_url,
+            metadata: logical_track_changed
+                || self.track.art_url != new_track.art_url
+                || self.track.can_set_volume != new_track.can_set_volume
+                || self.track.can_set_rate != new_track.can_set_rate
+                || self.track.can_set_loop != new_track.can_set_loop,
             playback_status: self.track.playing != new_track.playing,
             volume: (self.track.volume - new_track.volume).abs() > 0.001,
-            rate: (self.track.rate - new_track.rate).abs() > 0.001,
+            rate: (self.track.rate - new_track.rate).abs() > 0.001
+                || self.track.can_set_rate != new_track.can_set_rate,
             loop_status: self.track.looping != new_track.looping,
             can_seek: self.track.can_seek != new_track.can_seek,
             can_go_next: self.track.can_go_next != new_track.can_go_next,
@@ -258,5 +263,21 @@ mod tests {
         t.source_id = "different-frame".into();
         assert!(state.apply_update(t).changed.metadata);
         assert_eq!(state.track_counter, 1);
+    }
+    #[test]
+    fn capabilities_refresh_metadata_without_changing_track_identity() {
+        let track = TrackInfo {
+            title: "Same session".into(),
+            ..TrackInfo::default()
+        };
+        let mut state = PlayerState::new(track.clone());
+        let mut next = track;
+        next.can_set_volume = true;
+        next.can_set_loop = true;
+        next.can_set_rate = true;
+        let result = state.apply_update(next);
+        assert!(result.changed.metadata);
+        assert!(result.changed.rate);
+        assert_eq!(state.track_counter, 0);
     }
 }
