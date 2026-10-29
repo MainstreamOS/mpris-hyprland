@@ -28,6 +28,18 @@ STAGE="$ROOT/build/chromium-unpacked"
 command -v chromium >/dev/null 2>&1 || { echo "error: chromium not on PATH" >&2; exit 1; }
 [[ -f "$KEY" ]] || { echo "error: missing $KEY (maintainer signing key)" >&2; exit 1; }
 
+# Derive the expected ID from the tracked manifest, not a maintainer-local file.
+want="$(python3 - "$EXT/manifest.chromium.json" <<'PY'
+import base64, hashlib, json, sys
+with open(sys.argv[1]) as manifest:
+    public_key = base64.b64decode(json.load(manifest)['key'], validate=True)
+print(hashlib.sha256(public_key).hexdigest()[:32].translate(str.maketrans('0123456789abcdef', 'abcdefghijklmnop')))
+PY
+)"
+got="$(openssl pkey -in "$KEY" -pubout -outform DER 2>/dev/null \
+    | openssl dgst -sha256 -binary | head -c 16 | od -An -v -tx1 | tr -d ' \n' | tr '0-9a-f' 'a-p')"
+[[ "$got" == "$want" ]] || { echo "error: extension ID $got != expected $want" >&2; exit 1; }
+
 # Stage exactly the files the Chromium build ships: the Chromium manifest
 # becomes manifest.json, plus the shared scripts and icons.
 rm -rf "$STAGE"
@@ -40,21 +52,15 @@ cp -f "$EXT/icons/icon-48.png" "$EXT/icons/icon-96.png" "$STAGE/icons/"
 # singleton lock doesn't block us.
 profile="$(mktemp -d)"
 trap 'rm -rf "$profile"' EXIT
+crx="$ROOT/build/chromium-unpacked.crx"
+rm -f "$crx"
 chromium \
     --pack-extension="$STAGE" \
     --pack-extension-key="$KEY" \
     --no-message-box \
-    --user-data-dir="$profile" >/dev/null 2>&1 || true
+    --user-data-dir="$profile" >/dev/null 2>&1
 
-crx="$ROOT/build/chromium-unpacked.crx"
 [[ -f "$crx" ]] || { echo "error: chromium produced no .crx" >&2; exit 1; }
-
-# Guard against a key/manifest mismatch that would silently change the ID and
-# orphan installed copies: the ID is sha256(DER pubkey)[:16] mapped 0-f → a-p.
-want="$(cat "$ROOT/.crx-extid.txt")"
-got="$(openssl rsa -in "$KEY" -pubout -outform DER 2>/dev/null \
-    | openssl dgst -sha256 -binary | head -c 16 | od -An -v -tx1 | tr -d ' \n' | tr '0-9a-f' 'a-p')"
-[[ "$got" == "$want" ]] || { echo "error: extension ID $got != expected $want" >&2; exit 1; }
 
 cp -f "$crx" "$ROOT/dist/mpris-hyprland.crx"
 echo "Packed → dist/mpris-hyprland.crx (id $got)"

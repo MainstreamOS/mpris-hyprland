@@ -134,9 +134,9 @@ which the `PKGBUILD` prefers; with it present, the extension auto-installs on
 next launch — no `about:debugging` step. Restart the browser and check
 `about:policies#active` / `about:addons`.
 
-If only the unsigned zip is built (no signed `dist/` build), the extension
-**won't** auto-install anywhere; load it manually via `about:debugging` (it
-drops on browser restart).
+Release packaging rejects missing or outdated signed bundles. An unsigned
+development package requires `MPRIS_HYPRLAND_TEST_BUILD=1`; its Firefox extension
+can be loaded manually via `about:debugging` and drops on browser restart.
 
 Other forks (LibreWolf, Floorp, Waterfox) ship their own hardening policy in
 `distribution/policies.json`; the `/etc` policy overrides it, so rather than
@@ -144,7 +144,7 @@ clobber their settings the package doesn't write `/etc/<fork>/policies.json` for
 them — copy the `ExtensionSettings` block from `/etc/zen/policies/policies.json`
 into that fork's existing policy file to enable auto-install there.
 
-### Signing for Firefox (one-time, optional)
+### Signing for Firefox (required for each extension release)
 
 To make the policy auto-install work on **vanilla Firefox** too (it rejects
 unsigned extensions), sign the extension once per release with Mozilla's
@@ -167,8 +167,43 @@ git add dist/mpris-hyprland.xpi && git commit -m "release: signed xpi <version>"
 
 The credentials are yours and stay in your environment — never commit them.
 Bump `extension/manifest.json`'s `version` before each new signing run (AMO
-won't re-sign a version it's already seen). The `PKGBUILD` automatically prefers
-`dist/mpris-hyprland.xpi` over the unsigned zip when it exists.
+won't re-sign a version it's already seen). The signed bundle's version must
+match `pkgver` for a release package to build.
+
+To sign through the website instead of setting API credentials:
+
+1. Build the Firefox upload from the current source:
+
+   ```sh
+   python3 scripts/build-extension.py --browser firefox --output build/firefox-release.zip
+   ```
+
+2. Open [your existing add-on in the Mozilla Developer Hub](https://addons.mozilla.org/developers/addons/)
+   and upload a new version for self-distribution ("On your own"). Upload
+   `build/firefox-release.zip`, keeping the existing add-on ID.
+3. After Mozilla signs it, download the signed XPI and copy it to
+   `dist/mpris-hyprland.xpi`. Do not replace that file with the unsigned ZIP.
+4. Commit the signed XPI before tagging the release.
+
+### Packing for Chromium (required for each extension release)
+
+Run from the repository root:
+
+```sh
+./scripts/pack-crx.sh
+git add dist/mpris-hyprland.crx
+git commit -m "release: Chromium bundle <version>"
+```
+
+The script requires Chromium and the original, gitignored
+`chromium-signing-key.pem`. It checks that the key matches the public key in
+`extension/manifest.chromium.json` before generating the CRX. Keep that private
+key for future updates so the installed extension retains its ID.
+
+The Firefox and Chromium bundles are separate release artifacts. Changing
+`pkgver` does not regenerate either one. Rebuild both when their scripts,
+manifests, or icons change. A host-only change can instead bump `pkgrel` while
+keeping the existing extension version and signed bundles.
 
 ### Uninstall
 
@@ -301,6 +336,11 @@ the same version. Release packages reject stale signed bundles. Set
 `MPRIS_HYPRLAND_TEST_BUILD=1` only for local unsigned package smoke tests.
 A package source override is available through `MPRIS_HYPRLAND_REPO_URL` and
 `MPRIS_HYPRLAND_REF` for explicit development builds.
+
+For example, once both 0.2.3 bundles are committed, create and publish `v0.2.3`
+on that commit, then rebuild the package. A recipe pointing at `v0.2.3` cannot
+fetch its source until that tag exists on the remote. Do not tag a release
+while either bundle still contains the previous version.
 
 The package merges only this extension's `ExtensionSettings` entry into the
 Firefox and Zen policies. It preserves unrelated settings and administrator
