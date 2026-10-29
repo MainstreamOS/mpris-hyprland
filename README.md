@@ -146,6 +146,14 @@ into that fork's existing policy file to enable auto-install there.
 
 ### Signing for Firefox (required for each extension release)
 
+The Firefox manifest declares the page URLs, media metadata/artwork, and playback
+activity sent to the local native host and exposed over the user's session D-Bus.
+Mozilla includes native messaging in its data-transmission declaration even
+though this is a local desktop bridge, so `required: ["none"]` would be inaccurate.
+Firefox 140 or later is required to show the browser's built-in consent prompt.
+The extension does not send analytics or upload this metadata to a developer-run
+service.
+
 To make the policy auto-install work on **vanilla Firefox** too (it rejects
 unsigned extensions), sign the extension once per release with Mozilla's
 self-distribution flow. The signed `.xpi` then installs everywhere — Firefox and
